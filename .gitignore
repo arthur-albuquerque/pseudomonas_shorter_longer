@@ -1,0 +1,6 @@
+*
+!fits/
+!fits/**
+!figure_letter.R
+!figure_letter.png
+!.gitignore
