@@ -382,16 +382,7 @@ The informative prior for the treatment effect in the No Pseudomonas subgroup is
 ### Posterior Results
 
 ```{r informative-posterior-fit, results='hide'}
-balance_fit <- brm(
-  y ~ treat * pseudo,
-  data = balance_long,
-  family = bernoulli(link = "logit"),
-  prior = model_priors,
-  sample_prior = "yes",
-  chains = 4, iter = 4000, warmup = 2000, cores = 4,
-  seed = 123, backend = "cmdstanr",
-  control = list(adapt_delta = 0.95)
-)
+balance_fit <- readRDS("fits/primary.rds")
 ```
 
 #### Diagnostics
@@ -621,16 +612,7 @@ Both priors are symmetric and centered at the null (OR = 1), reflecting agnostic
 ### Sensitivity Analysis model
 
 ```{r weak-posterior-fit, results='hide'}
-weak_fit <- brm(
-  y ~ treat * pseudo,
-  data = balance_long,
-  family = bernoulli(link = "logit"),
-  prior = weak_priors,
-  sample_prior = "yes",
-  chains = 4, iter = 4000, warmup = 2000, cores = 4,
-  seed = 123, backend = "cmdstanr",
-  control = list(adapt_delta = 0.95)
-)
+weak_fit <- readRDS("fits/sensitivity.rds")
 ```
 
 #### Diagnostics
