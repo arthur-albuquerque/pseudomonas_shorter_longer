@@ -289,8 +289,8 @@ ror_breaks  <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
 
 colors = met.brewer(name="Isfahan1", n=8, type="discrete")
 
-col_no_pseudo   <- colors[8]
-col_pseudo      <- colors[3]
+col_no_pseudo   <- colors[2]
+col_pseudo      <- colors[8]
 col_interaction <- colors[5]
 
 
