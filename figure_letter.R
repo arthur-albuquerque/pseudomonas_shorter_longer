@@ -1,5 +1,5 @@
 pacman::p_load(rio, dplyr, brms, metafor, tidybayes, ggplot2, ggdist,
-               patchwork, tibble, tidyr)
+               patchwork, tibble, tidyr, MetBrewer)
 
 # ---- Step 1: Informative priors from external studies ----
 
@@ -287,10 +287,12 @@ fig_theme <- theme_bw(base_size = 10) +
 or_breaks  <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
 ror_breaks  <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
 
-# Colors for each row
-col_no_pseudo   <- "#3182bd"  # blue
-col_pseudo      <- "#e6550d"  # orange
-col_interaction <- "#31a354"  # green
+colors = met.brewer(name="Isfahan1", n=8, type="discrete")
+
+col_no_pseudo   <- colors[8]
+col_pseudo      <- colors[3]
+col_interaction <- colors[5]
+
 
 # ---- Helper function for panels ----
 
