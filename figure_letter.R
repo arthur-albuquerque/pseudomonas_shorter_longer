@@ -176,10 +176,48 @@ weak_fit$data$treat_pseudo <- interaction(
 pp_check(weak_fit, "stat_grouped", group = "treat_pseudo") +
   labs(x = "Death probability")
 
+# ---- Step 4b: Fit SKEPTICAL prior model ----
+
+skeptic_priors <- c(
+  prior(normal(0, 1.5), class = "Intercept"),
+  prior_string(treat_prior_str,       class = "b", coef = "treat"),
+  prior(normal(0, 1.5),               class = "b", coef = "pseudo"),
+  prior(normal(0, 0.36),              class = "b", coef = "treat:pseudo")
+)
+
+skeptic_fit <- brm(
+  y ~ treat * pseudo,
+  data    = balance_long,
+  family  = bernoulli(link = "logit"),
+  prior   = skeptic_priors,
+  sample_prior = "yes",
+  chains  = 4,
+  iter    = 10000,
+  warmup  = 5000,
+  cores   = 4,
+  seed    = 123,
+  backend = "cmdstanr",
+  control = list(adapt_delta = 0.95),
+  file = "fits/skeptic",
+  file_refit = "on_change"
+)
+
+plot(skeptic_fit)
+
+skeptic_fit$data$treat_pseudo <- interaction(
+  ifelse(skeptic_fit$data$treat, "7-day", "14-day"),
+  ifelse(skeptic_fit$data$pseudo, "Pseudomonas", "Non-Pseudomonas"),
+  sep = " / "
+)
+
+pp_check(skeptic_fit, "stat_grouped", group = "treat_pseudo") +
+  labs(x = "Death probability")
+
 # ---- Step 5: Extract draws ----
 
-info_post <- as_draws_df(info_fit)
-weak_post <- as_draws_df(weak_fit)
+info_post    <- as_draws_df(info_fit)
+weak_post    <- as_draws_df(weak_fit)
+skeptic_post <- as_draws_df(skeptic_fit)
 
 # Informative posterior draws
 info_no_pseudo   <- info_post$b_treat
@@ -201,6 +239,16 @@ weak_prior_no_pseudo   <- weak_post$prior_b_treat
 weak_prior_pseudo      <- weak_post$prior_b_treat + weak_post$`prior_b_treat:pseudo`
 weak_prior_interaction <- weak_post$`prior_b_treat:pseudo`
 
+# Skeptical posterior draws
+skeptic_no_pseudo   <- skeptic_post$b_treat
+skeptic_pseudo      <- skeptic_post$b_treat + skeptic_post$`b_treat:pseudo`
+skeptic_interaction <- skeptic_post$`b_treat:pseudo`
+
+# Skeptical prior draws
+skeptic_prior_no_pseudo   <- skeptic_post$prior_b_treat
+skeptic_prior_pseudo      <- skeptic_post$prior_b_treat + skeptic_post$`prior_b_treat:pseudo`
+skeptic_prior_interaction <- skeptic_post$`prior_b_treat:pseudo`
+
 # ---- Step 6: Compute posterior probabilities ----
 
 # Row 1 (No Pseudo): P(OR < 1) = P(log-OR < 0)
@@ -214,6 +262,11 @@ weak_prob_pseudo <- round(mean(weak_pseudo > 0) * 100, 0)
 # Row 3 (Interaction): P(ROR > 1) = P(interaction > 0)
 info_prob_interaction <- round(mean(info_interaction > 0) * 100, 0)
 weak_prob_interaction <- round(mean(weak_interaction > 0) * 100, 0)
+
+# Skeptical probabilities
+skeptic_prob_no_pseudo   <- round(mean(skeptic_no_pseudo < 0) * 100, 0)
+skeptic_prob_pseudo      <- round(mean(skeptic_pseudo > 0) * 100, 0)
+skeptic_prob_interaction <- round(mean(skeptic_interaction > 0) * 100, 0)
 
 # ---- Step 7: Shared theme and scales ----
 
@@ -231,8 +284,8 @@ fig_theme <- theme_bw(base_size = 10) +
     plot.margin      = margin(4, 8, 4, 8)
   )
 
-or_breaks  <- c(0.1, 0.2, 0.5, 1, 2, 5, 10)
-ror_breaks <- c(0.1, 0.2, 0.5, 1, 2, 5, 10)
+or_breaks  <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
+ror_breaks  <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
 
 # Colors for each row
 col_no_pseudo   <- "#3182bd"  # blue
@@ -293,8 +346,8 @@ make_panel <- function(post_draws, prior_draws, fill_col, threshold, direction,
     annotate(
       "text",
       x = ifelse(direction == "below",
-                 quantile(post_draws, 0.015),
-                 quantile(post_draws, 0.985)),
+                 quantile(post_draws, 0.025),
+                 quantile(post_draws, 0.9)),
       y = 0.85,
       label = paste0(prob_pct, "%"),
       size  = 8,
@@ -317,8 +370,8 @@ make_panel <- function(post_draws, prior_draws, fill_col, threshold, direction,
 
 # ---- Step 8: Build 6 panels ----
 
-or_xlim  <- log(c(0.1, 10))
-ror_xlim <- log(c(0.1, 10))
+or_xlim  <- log(c(0.2, 5))
+ror_xlim <- log(c(0.2, 5))
 
 # Row 1: No Pseudomonas — P(OR < 1), fill below 0, blue
 p_info_no_pseudo <- make_panel(
@@ -377,6 +430,34 @@ p_weak_interaction <- make_panel(
   panel_title = "Subgroup Difference (Interaction)"
 )
 
+# Column 3: Skeptical prior panels
+p_skeptic_no_pseudo <- make_panel(
+  skeptic_no_pseudo, skeptic_prior_no_pseudo,
+  fill_col = col_no_pseudo, threshold = 0, direction = "below",
+  prob_pct = skeptic_prob_no_pseudo,
+  x_breaks = log(or_breaks), x_labels = or_breaks,
+  x_title = "Odds Ratio (log scale)", xlims = or_xlim,
+  panel_title = "Non-Pseudomonas Subgroup"
+)
+
+p_skeptic_pseudo <- make_panel(
+  skeptic_pseudo, skeptic_prior_pseudo,
+  fill_col = col_pseudo, threshold = 0, direction = "above",
+  prob_pct = skeptic_prob_pseudo,
+  x_breaks = log(or_breaks), x_labels = or_breaks,
+  x_title = "Odds Ratio (log scale)", xlims = or_xlim,
+  panel_title = "Pseudomonas Subgroup"
+)
+
+p_skeptic_interaction <- make_panel(
+  skeptic_interaction, skeptic_prior_interaction,
+  fill_col = col_interaction, threshold = 0, direction = "above",
+  prob_pct = skeptic_prob_interaction,
+  x_breaks = log(ror_breaks), x_labels = ror_breaks,
+  x_title = "Ratio of Odds Ratios (log scale)", xlims = ror_xlim,
+  panel_title = "Subgroup Difference (Interaction)"
+)
+
 # ---- Step 9: Assemble with patchwork ----
 
 # Column header labels
@@ -390,22 +471,25 @@ header_sensitivity <- wrap_elements(
   textGrob("Sensitivity Analysis\n(Weakly Informative Prior)",
            gp = gpar(fontsize = 12, fontface = "bold"))
 )
+header_skeptic <- wrap_elements(
+  textGrob("Sensitivity Analysis\n(Skeptical Prior)",
+           gp = gpar(fontsize = 12, fontface = "bold"))
+)
 
-# Layout: header row + 3 data rows, 2 columns
-figure_letter <- (header_primary | header_sensitivity) /
-  (p_info_no_pseudo | p_weak_no_pseudo) /
-  (p_info_pseudo    | p_weak_pseudo) /
-  (p_info_interaction | p_weak_interaction) +
+# Layout: header row + 3 data rows, 3 columns
+figure_letter <- (header_primary | header_sensitivity | header_skeptic) /
+  (p_info_no_pseudo | p_weak_no_pseudo | p_skeptic_no_pseudo) /
+  (p_info_pseudo    | p_weak_pseudo    | p_skeptic_pseudo) /
+  (p_info_interaction | p_weak_interaction | p_skeptic_interaction) +
   plot_layout(heights = c(0.8, 3, 3, 3))
 
-ggsave(
-  "figure_letter.png",
-  plot   = figure_letter,
-  width  = 8,
-  height = 10,
-  dpi    = 300,
-  bg     = "white"
-)
+png("figure_letter.png", width = 12, height = 10, units = "in", res = 300, bg = "white")
+print(figure_letter)
+grid.lines(x = unit(c(1/3, 1/3), "npc"), y = unit(c(0, 1), "npc"),
+           gp = gpar(col = "black", lwd = 0.5))
+grid.lines(x = unit(c(2/3, 2/3), "npc"), y = unit(c(0, 1), "npc"),
+           gp = gpar(col = "black", lwd = 0.5))
+dev.off()
 
 message("Saved: figure_letter.png")
 

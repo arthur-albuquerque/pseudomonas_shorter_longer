@@ -695,4 +695,169 @@ cmp_no_pseudo / cmp_pseudo / cmp_interaction +
   plot_annotation(title = "Posterior comparison: informative vs weakly informative priors")
 ```
 
-The posterior distributions from both models are highly concordant across all three estimands. 
+The posterior distributions from both models are highly concordant across all three estimands.
+
+## Sensitivity Analysis: Skeptical Prior
+
+As a further sensitivity analysis, we fit a third model using a skeptical prior for the interaction term. This prior is centered at zero with a tighter standard deviation (SD = 0.36), expressing stronger prior belief that no subgroup difference exists. The treatment effect prior remains the same informative prior used in the primary analysis. This tests whether the signal of differential treatment effect persists even under a prior that actively downweights subgroup differences.
+
+A Normal(0, 0.36) prior on the log-ROR scale places 95% of prior mass on RORs between approximately 0.49 and 2.03, meaning the prior considers it very unlikely a priori that the treatment effect in one subgroup would be more than double that in the other.
+
+```{r skeptic-prior-table}
+skeptic_prior_summary <- tibble(
+  Parameter = c("Intercept (β₀)", "Treatment (β₁)", "Pseudomonas baseline (β₂)", "Interaction (β₃)"),
+  Prior = c(
+    "Normal(0, 1.5)",
+    sprintf("Normal(%.2f, %.2f)", treat_prior_mean, treat_prior_sd),
+    "Normal(0, 1.5)",
+    "Normal(0, 0.36)"
+  ),
+  Rationale = c(
+    "Same as primary analysis",
+    "Same informative prior as primary analysis",
+    "Same as primary analysis",
+    "SD of 0.36 places 95% prior mass on RORs between ~0.49 and ~2.03 — skeptical of subgroup differences"
+  )
+)
+kable(skeptic_prior_summary, caption = "Prior specifications for the skeptical sensitivity analysis")
+```
+
+### Skeptical Model
+
+```{r skeptic-posterior-fit, results='hide'}
+skeptic_fit <- readRDS("fits/skeptic.rds")
+```
+
+#### Diagnostics
+
+```{r skeptic-trace, fig.height=6}
+plot(skeptic_fit)
+```
+
+```{r skeptic-ppcheck, fig.height=5}
+skeptic_fit$data$treat_pseudo <- interaction(
+  ifelse(skeptic_fit$data$treat, "7-day", "14-day"),
+  ifelse(skeptic_fit$data$pseudo, "Pseudomonas", "Non-Pseudomonas"),
+  sep = " / "
+)
+
+pp_check(skeptic_fit, "stat_grouped", group = "treat_pseudo") +
+  labs(x = "Death probability")
+```
+
+Trace plots and posterior predictive checks for the skeptical model show good mixing and calibration.
+
+```{r skeptic-posterior-summary}
+summary(skeptic_fit)
+```
+
+```{r skeptic-posterior-plots, fig.height=5}
+skeptic_post <- as_draws_df(skeptic_fit)
+
+skeptic_post_pred <- tibble(
+  `No Pseudomonas` = skeptic_post$b_treat,
+  `Pseudomonas`    = skeptic_post$b_treat + skeptic_post$`b_treat:pseudo`
+)
+
+p1_skeptic_post <- skeptic_post_pred |>
+  tidyr::pivot_longer(everything(), names_to = "Subgroup", values_to = "log_OR") |>
+  ggplot(aes(x = log_OR, fill = Subgroup, y = Subgroup)) +
+  stat_halfeye(point_interval = median_hdi, .width = 0.95) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_x_continuous(
+    breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10) |> log(),
+    labels = function(x) exp(x)
+  ) +
+  labs(
+    title = "Posterior treatment effect by subgroup (skeptical prior)",
+    x = "Odds Ratio (7-day vs 14-day, log scale)", y = NULL
+  ) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(-3, 3))
+
+skeptic_prob_beta <- (mean(skeptic_post$`b_treat:pseudo` > 0) * 100) |> round(0)
+
+p2_skeptic_post <- tibble(interaction = skeptic_post$`b_treat:pseudo`) |>
+  ggplot(aes(x = interaction, fill = after_stat(x > log(1)))) +
+  stat_halfeye(point_interval = median_hdi, .width = 0.95) +
+  scale_fill_manual(values = c("gray90", "forestgreen")) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate("text",
+           x = quantile(skeptic_post$`b_treat:pseudo`, 0.99),
+           y = 0.3, size = 10,
+           label = paste0(skeptic_prob_beta, "%")) +
+  scale_x_continuous(
+    breaks = c(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20) |> log(),
+    labels = function(x) exp(x)
+  ) +
+  scale_y_continuous(labels = NULL) +
+  labs(
+    title = "Posterior interaction (skeptical prior)",
+    x = "\nRatio of Odds Ratios (log scale)", y = "Density"
+  ) +
+  coord_cartesian(xlim = c(-2, 2)) +
+  theme(legend.position = "none")
+
+p1_skeptic_post
+p2_skeptic_post
+```
+
+### Posterior Comparison Across All Three Models
+
+```{r model-comparison-all, fig.height=12}
+cmp_all_no_pseudo <- bind_rows(
+  tibble(log_OR = post$b_treat, Model = "Informative"),
+  tibble(log_OR = weak_post$b_treat, Model = "Weakly informative"),
+  tibble(log_OR = skeptic_post$b_treat, Model = "Skeptical")
+) |>
+  ggplot(aes(x = log_OR, fill = Model)) +
+  geom_density(alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("Informative" = "steelblue", "Weakly informative" = "coral", "Skeptical" = "mediumpurple")) +
+  scale_x_continuous(
+    breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10) |> log(),
+    labels = function(x) round(exp(x), 2)
+  ) +
+  labs(title = "No Pseudomonas: treatment effect",
+       x = "Odds Ratio (7-day vs 14-day, log scale)", y = "Density") +
+  coord_cartesian(xlim = c(-3, 3))
+
+cmp_all_pseudo <- bind_rows(
+  tibble(log_OR = post$b_treat + post$`b_treat:pseudo`, Model = "Informative"),
+  tibble(log_OR = weak_post$b_treat + weak_post$`b_treat:pseudo`, Model = "Weakly informative"),
+  tibble(log_OR = skeptic_post$b_treat + skeptic_post$`b_treat:pseudo`, Model = "Skeptical")
+) |>
+  ggplot(aes(x = log_OR, fill = Model)) +
+  geom_density(alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("Informative" = "steelblue", "Weakly informative" = "coral", "Skeptical" = "mediumpurple")) +
+  scale_x_continuous(
+    breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10) |> log(),
+    labels = function(x) round(exp(x), 2)
+  ) +
+  labs(title = "Pseudomonas: treatment effect",
+       x = "Odds Ratio (7-day vs 14-day, log scale)", y = "Density") +
+  coord_cartesian(xlim = c(-3, 3))
+
+cmp_all_interaction <- bind_rows(
+  tibble(log_OR = post$`b_treat:pseudo`, Model = "Informative"),
+  tibble(log_OR = weak_post$`b_treat:pseudo`, Model = "Weakly informative"),
+  tibble(log_OR = skeptic_post$`b_treat:pseudo`, Model = "Skeptical")
+) |>
+  ggplot(aes(x = log_OR, fill = Model)) +
+  geom_density(alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("Informative" = "steelblue", "Weakly informative" = "coral", "Skeptical" = "mediumpurple")) +
+  scale_x_continuous(
+    breaks = c(0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20) |> log(),
+    labels = function(x) round(exp(x), 2)
+  ) +
+  labs(title = "Interaction (Pseudomonas modifier)",
+       x = "Ratio of Odds Ratios (log scale)", y = "Density") +
+  coord_cartesian(xlim = c(-4, 4))
+
+cmp_all_no_pseudo / cmp_all_pseudo / cmp_all_interaction +
+  plot_annotation(title = "Posterior comparison: all three prior specifications")
+```
+
+The posterior distributions from all three models are highly concordant across all three estimands, demonstrating robustness of the findings even under a skeptical prior that actively penalizes subgroup differences.
