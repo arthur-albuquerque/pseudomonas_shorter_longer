@@ -72,6 +72,31 @@ balance_long <- bind_rows(
   )
 )
 
+# Sanity check: verify expansion matches original counts
+check <- balance_long |>
+  group_by(pseudo) |>
+  summarise(n = n(), events = sum(y), .groups = "drop")
+
+check
+
+orig <- balance |>
+  group_by(subgroup) |>
+  summarise(
+    n      = sum(seven_total + fourteen_total),
+    events = sum(seven_events + fourteen_events),
+    .groups = "drop"
+  ) |>
+  mutate(pseudo = ifelse(subgroup == "Only Pseudomonas", 1L, 0L))
+
+orig
+
+stopifnot(
+  all.equal(check$n[check$pseudo == 0],      orig$n[orig$pseudo == 0]),
+  all.equal(check$n[check$pseudo == 1],      orig$n[orig$pseudo == 1]),
+  all.equal(check$events[check$pseudo == 0], orig$events[orig$pseudo == 0]),
+  all.equal(check$events[check$pseudo == 1], orig$events[orig$pseudo == 1])
+)
+
 # ---- Step 3: Fit INFORMATIVE prior model ----
 
 treat_prior_str       <- sprintf("normal(%0.4f, %0.4f)", treat_prior_mean, treat_prior_sd)
@@ -103,6 +128,16 @@ info_fit <- brm(
 
 plot(info_fit)
 
+info_fit$data$treat_pseudo <- interaction(
+  ifelse(info_fit$data$treat, "7-day", "14-day"),
+  ifelse(info_fit$data$pseudo, "Pseudomonas", "Non-Pseudomonas"),
+  sep = " / "
+)
+
+pp_check(info_fit, "stat_grouped", group = "treat_pseudo") +
+  labs(x = "Death probability")
+
+
 # ---- Step 4: Fit WEAKLY INFORMATIVE prior model ----
 
 weak_priors <- c(
@@ -130,6 +165,16 @@ weak_fit <- brm(
 )
 
 plot(weak_fit)
+
+
+weak_fit$data$treat_pseudo <- interaction(
+  ifelse(weak_fit$data$treat, "7-day", "14-day"),
+  ifelse(weak_fit$data$pseudo, "Pseudomonas", "Non-Pseudomonas"),
+  sep = " / "
+)
+
+pp_check(weak_fit, "stat_grouped", group = "treat_pseudo") +
+  labs(x = "Death probability")
 
 # ---- Step 5: Extract draws ----
 
@@ -174,10 +219,10 @@ weak_prob_interaction <- round(mean(weak_interaction > 0) * 100, 0)
 
 fig_theme <- theme_bw(base_size = 10) +
   theme(
-    plot.title       = element_text(face = "bold", size = 10, hjust = 0.5),
+    plot.title       = element_text(face = "bold", size = 13, hjust = 0.5),
     axis.text.y      = element_blank(),
     axis.ticks.y     = element_blank(),
-    axis.title.x     = element_text(size = 9),
+    axis.title.x     = element_text(size = 12),
     axis.title.y     = element_blank(),
     panel.grid.major.y = element_blank(),
     panel.grid.minor   = element_blank(),
@@ -252,7 +297,7 @@ make_panel <- function(post_draws, prior_draws, fill_col, threshold, direction,
                  quantile(post_draws, 0.985)),
       y = 0.85,
       label = paste0(prob_pct, "%"),
-      size  = 3.5,
+      size  = 8,
       fontface = "bold",
       hjust = ifelse(direction == "below", 1, 0),
       color = fill_col
@@ -282,7 +327,7 @@ p_info_no_pseudo <- make_panel(
   prob_pct = info_prob_no_pseudo,
   x_breaks = log(or_breaks), x_labels = or_breaks,
   x_title = "Odds Ratio (log scale)", xlims = or_xlim,
-  panel_title = "No Pseudomonas"
+  panel_title = "Non-Pseudomonas Subgroup"
 )
 
 p_weak_no_pseudo <- make_panel(
@@ -291,7 +336,7 @@ p_weak_no_pseudo <- make_panel(
   prob_pct = weak_prob_no_pseudo,
   x_breaks = log(or_breaks), x_labels = or_breaks,
   x_title = "Odds Ratio (log scale)", xlims = or_xlim,
-  panel_title = "No Pseudomonas"
+  panel_title = "Non-Pseudomonas Subgroup"
 )
 
 # Row 2: Pseudomonas — P(OR > 1), fill above 0, orange
@@ -301,7 +346,7 @@ p_info_pseudo <- make_panel(
   prob_pct = info_prob_pseudo,
   x_breaks = log(or_breaks), x_labels = or_breaks,
   x_title = "Odds Ratio (log scale)", xlims = or_xlim,
-  panel_title = "Pseudomonas"
+  panel_title = "Pseudomonas Subgroup"
 )
 
 p_weak_pseudo <- make_panel(
@@ -310,7 +355,7 @@ p_weak_pseudo <- make_panel(
   prob_pct = weak_prob_pseudo,
   x_breaks = log(or_breaks), x_labels = or_breaks,
   x_title = "Odds Ratio (log scale)", xlims = or_xlim,
-  panel_title = "Pseudomonas"
+  panel_title = "Pseudomonas Subgroup"
 )
 
 # Row 3: Interaction — P(ROR > 1), fill above 0, green
@@ -320,7 +365,7 @@ p_info_interaction <- make_panel(
   prob_pct = info_prob_interaction,
   x_breaks = log(ror_breaks), x_labels = ror_breaks,
   x_title = "Ratio of Odds Ratios (log scale)", xlims = ror_xlim,
-  panel_title = "Interaction"
+  panel_title = "Subgroup Difference (Interaction)"
 )
 
 p_weak_interaction <- make_panel(
@@ -329,7 +374,7 @@ p_weak_interaction <- make_panel(
   prob_pct = weak_prob_interaction,
   x_breaks = log(ror_breaks), x_labels = ror_breaks,
   x_title = "Ratio of Odds Ratios (log scale)", xlims = ror_xlim,
-  panel_title = "Interaction"
+  panel_title = "Subgroup Difference (Interaction)"
 )
 
 # ---- Step 9: Assemble with patchwork ----
@@ -338,11 +383,11 @@ p_weak_interaction <- make_panel(
 library(grid)
 
 header_primary <- wrap_elements(
-  textGrob("Primary Analysis\n(Informative Priors)",
+  textGrob("Primary Analysis\n(Informative Prior)",
            gp = gpar(fontsize = 12, fontface = "bold"))
 )
 header_sensitivity <- wrap_elements(
-  textGrob("Sensitivity Analysis\n(Weakly Informative Priors)",
+  textGrob("Sensitivity Analysis\n(Weakly Informative Prior)",
            gp = gpar(fontsize = 12, fontface = "bold"))
 )
 
