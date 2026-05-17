@@ -7,4 +7,4 @@ Repository for a Brief report related to:
 ## Files
 
 - [`analysis.R`](analysis.R) — Main analysis script
-- [`report.html`](https://htmlpreview.github.io/?https://github.com/arthur-albuquerque/pseudomonas_shorter_longer/blob/main/report.html) — Full analysis report (click to view in browser)
+- [`report.html`](https://htmlpreview.github.io/?https://github.com/arthur-albuquerque/pseudomonas_shorter_longer/blob/main/report.html) — Full analysis report (click to view rendered version in your browser)
