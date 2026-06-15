@@ -1,6 +1,6 @@
 ---
 title: "Pseudomonas aeruginosa as an Effect Modifier of Antibiotic Duration in Bacteremia"
-subtitle: "A Two-Stage Bayesian IPD Meta-Analysis — 7-day vs. 14-day antibiotic course and all-cause mortality"
+subtitle: "A Two-Stage Bayesian Meta-Analysis — 7-day vs. 14-day antibiotic course and all-cause mortality"
 format:
   html:
     toc: true
@@ -109,9 +109,9 @@ Critically, only **Yahav 2019** and **BALANCE** provide both strata, so all with
 
 ## 3. Analytical Framework
 
-### 3.1 Two-stage IPD meta-analysis
+### 3.1 Two-stage meta-analysis
 
-We follow the two-stage framework for examining treatment–covariate interactions in IPD meta-analyses described by Riley et al. (*Statistics in Medicine*, 2020; DOI 10.1002/sim.8516). The key principle from that paper is:
+We follow the two-stage framework for examining treatment–covariate interactions in meta-analyses described by Riley et al. (*Statistics in Medicine*, 2020; DOI 10.1002/sim.8516). The key principle from that paper is:
 
 > *"Interactions should be estimated directly, and not by calculating differences in meta-analysis results for subgroups … interaction estimates should be based solely on within-study information."* (Riley et al., §4.1–4.2)
 
@@ -382,7 +382,7 @@ summ_tbl |>
 
 ## 9. Summary
 
-This analysis implements a two-stage Bayesian IPD meta-analysis following the recommendations of Riley et al. (2020). The interaction estimand is derived from within-trial evidence only, avoiding ecological bias. We calculate the exact pooled posterior distributions analytically in closed form under the conjugate normal-normal model from Röver (2020).
+This analysis implements a two-stage Bayesian meta-analysis following the recommendations of Riley et al. (2020). The interaction estimand is derived from within-trial evidence only, avoiding ecological bias. We calculate the exact pooled posterior distributions analytically in closed form under the conjugate normal-normal model from Röver (2020).
 
 ```{r final-summary-table}
 summ_tbl |>
