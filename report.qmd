@@ -1,6 +1,6 @@
 ---
-title: "Bayesian Subgroup Analysis: Antibiotic Duration in Bacteremia"
-subtitle: "Reanalysis of the BALANCE Trial with Historical, Skeptical, and Weakly Informative Priors"
+title: "Pseudomonas aeruginosa as an Effect Modifier of Antibiotic Duration in Bacteremia"
+subtitle: "A Two-Stage Bayesian IPD Meta-Analysis — 7-day vs. 14-day antibiotic course and all-cause mortality"
 format:
   html:
     toc: true
@@ -9,8 +9,8 @@ format:
     embed-resources: true
     code-fold: true
     code-summary: "Show code"
-    fig-width: 8
-    fig-height: 5
+    fig-width: 9
+    fig-height: 6
     fig-dpi: 150
     html-math-method: katex
     self-contained-math: true
@@ -20,576 +20,399 @@ execute:
 ---
 
 ```{r setup}
-pacman::p_load(rio, dplyr, brms, metafor, tidybayes, ggplot2, ggdist,
-               patchwork, knitr, tibble, tidyr, gt, marginaleffects)
-
-theme_set(
-  theme(
-    plot.title.position = 'plot',
-    axis.ticks.x = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.text.x = element_text(size = 12),
-    axis.text.y = element_text(size = 12),
-    axis.title.x = element_text(size = 14),
-    panel.background = element_blank(),
-    panel.grid.major.x = element_line(color = "gray80", linewidth = 0.3)
-  )
+pacman::p_load(
+  rio, dplyr, purrr, metafor,
+  ggplot2, ggdist, patchwork, tibble, tidyr, MetBrewer,
+  knitr, gt, glue
 )
 ```
 
-## Research Questions
+## 1. Background and Research Questions
 
-The primary treatment effect of interest is whether there is a difference in **all-cause mortality** between **7-day vs. 14-day** antibiotic duration in patients with gram-negative bacteremia.
+**Clinical question.** Should gram-negative bacteremia be treated for 7 days or 14 days? Several large randomised trials — Yahav 2019, BALANCE, von Dach 2020, Molina 2022, and SHORTEN2 — have compared these durations, but none was individually powered to detect whether the answer differs by pathogen. *Pseudomonas aeruginosa* is of particular concern: it is intrinsically resistant to many antibiotics, and a shorter course may be insufficient to eradicate it, potentially leading to higher mortality.
 
-The secondary question is whether this treatment effect differs between two clinically important subgroups: patients with **Other Gram-negative** infections and patients with **Pseudomonas only** infections. Pseudomonas aeruginosa is an intrinsically resistant organism for which shorter treatment courses may be insufficient, making this subgroup distinction clinically relevant.
+**Statistical question.** Is there a treatment–pathogen interaction, i.e. does the 7-day vs. 14-day risk ratio for all-cause mortality differ between (a) patients infected with *Pseudomonas aeruginosa* and (b) patients infected with other gram-negative organisms? Pooling across trials increases power to detect such an interaction — but only if the analysis is conducted correctly.
 
-## Data
+---
 
-```{r data}
+## 2. Data
+
+```{r load-data}
 dat <- import("pseudomonas_data.xlsx")
 
-dat |>
-  select(study, subgroup, seven_events, seven_total, fourteen_events, fourteen_total) |>
+shorten2 <- tibble(
+  study = "SHORTEN2", subgroup = "Only Pseudomonas",
+  seven_events = 6L, seven_total = 149L,
+  fourteen_events = 7L, fourteen_total = 154L
+)
+
+dat <- bind_rows(dat, shorten2) |>
   mutate(
-    subgroup = ifelse(subgroup == "No Pseudomonas",
-                      "Other Gram-negative", "Pseudomonas aeruginosa"),
     study = case_when(
-      study == "Yahav 2019 no Pseudomonas"   ~ "Yahav 2019",
-      study == "Yahav 2019 Pseudomonas Only" ~ "Yahav 2019",
-      study == "BALANCE no Pseudomonas"      ~ "BALANCE",
-      study == "BALANCE Pseudomonas only"    ~ "BALANCE",
+      grepl("Yahav",   study) ~ "Yahav 2019",
+      grepl("BALANCE", study) ~ "BALANCE",
       TRUE ~ study
-    )
+    ),
+    sublab = ifelse(subgroup == "Only Pseudomonas",
+                    "Pseudomonas aeruginosa", "Other Gram-negative")
+  )
+```
+
+```{r data-table}
+dat |>
+  select(study, sublab, seven_events, seven_total,
+         fourteen_events, fourteen_total) |>
+  arrange(sublab, study) |>
+  mutate(
+    rate_7d  = sprintf("%.1f%%", 100 * seven_events / seven_total),
+    rate_14d = sprintf("%.1f%%", 100 * fourteen_events / fourteen_total)
   ) |>
-  arrange(desc(subgroup), study) |>
-  gt(groupname_col = "subgroup") |>
+  gt(groupname_col = "sublab") |>
   tab_header(
-    title = "Available trial data on 7-day vs 14-day antibiotic duration"
+    title    = md("**Trial data: 7-day vs. 14-day antibiotic duration**"),
+    subtitle = "Outcome: all-cause mortality"
   ) |>
   cols_label(
-    study = "Study",
-    seven_events = "Events",
-    seven_total = "Total",
-    fourteen_events = "Events",
-    fourteen_total = "Total"
+    study            = "Trial",
+    seven_events     = "Events",
+    seven_total      = "Total",
+    rate_7d          = "Rate",
+    fourteen_events  = "Events",
+    fourteen_total   = "Total",
+    rate_14d         = "Rate"
   ) |>
-  tab_spanner(label = "7-day", columns = c(seven_events, seven_total)) |>
-  tab_spanner(label = "14-day", columns = c(fourteen_events, fourteen_total)) |>
+  tab_spanner(label = "7-day arm",  columns = c(seven_events,    seven_total,    rate_7d)) |>
+  tab_spanner(label = "14-day arm", columns = c(fourteen_events, fourteen_total, rate_14d)) |>
   tab_style(
-    style = cell_text(weight = "bold"),
+    style     = cell_text(weight = "bold"),
+    locations = cells_row_groups()
+  ) |>
+  tab_footnote(
+    footnote  = "SHORTEN2 contributed the Pseudomonas stratum only; event counts were not in the source xlsx and were entered manually.",
+    locations = cells_body(columns = study, rows = study == "SHORTEN2")
+  )
+```
+
+**Trial matrix.** Five RCTs contribute data to this analysis:
+
+| Trial | Other Gram-negative | *Pseudomonas* | Interaction estimable? |
+|---|:---:|:---:|:---:|
+| Yahav 2019 | ✓ | ✓ | **yes** |
+| BALANCE | ✓ | ✓ | **yes** |
+| von Dach 2020 | ✓ | — | no |
+| Molina 2022 | ✓ | — | no |
+| SHORTEN2 | — | ✓ | no |
+
+Critically, only **Yahav 2019** and **BALANCE** provide both strata, so all within-trial information about the treatment–pathogen interaction comes from these two trials.
+
+---
+
+## 3. Analytical Framework
+
+### 3.1 Two-stage IPD meta-analysis
+
+We follow the two-stage framework for examining treatment–covariate interactions in IPD meta-analyses described by Riley et al. (*Statistics in Medicine*, 2020; DOI 10.1002/sim.8516). The key principle from that paper is:
+
+> *"Interactions should be estimated directly, and not by calculating differences in meta-analysis results for subgroups … interaction estimates should be based solely on within-study information."* (Riley et al., §4.1–4.2)
+
+Comparing subgroup-specific pooled estimates conflates within-trial and across-trial information, introducing aggregation (ecological) bias. The correct estimand of a treatment–covariate interaction is the difference in treatment effects **within each trial**, pooled across trials. Trials that observe only one subgroup contribute information about that subgroup's main effect but contribute **zero information** to the interaction.
+
+We fit three separate Stage-2 models rather than a single omnibus model:
+
+1. **Other Gram-negative subgroup** — pools the main treatment effect in patients without *Pseudomonas*.
+2. ***Pseudomonas aeruginosa* subgroup** — pools the main treatment effect in patients with *Pseudomonas*.
+3. **Within-trial interaction (subgroup difference)** — pools the within-trial log(RR) difference (Pseudomonas minus Other GN) across the two trials that provide both strata.
+
+All three estimands are on the **risk ratio (RR) scale** throughout this report.
+
+### 3.2 Stage 1: Within-trial effect sizes
+
+For each trial $i$ and each available subgroup $s \in \{\text{Other GN},\, \text{Pseudomonas}\}$, we compute the log risk ratio and its sampling variance from the $2 \times 2$ table using `metafor::escalc(measure = "RR")`:
+
+$$
+\hat\theta_{is} = \log\!\Bigl(\widehat{\text{RR}}_{is}\Bigr)
+= \log\!\left(\frac{a_{is}\,/\,(a_{is}+b_{is})}{c_{is}\,/\,(c_{is}+d_{is})}\right)
+$$
+
+$$
+\hat{V}_{is}
+= \frac{1}{a_{is}} - \frac{1}{a_{is}+b_{is}} + \frac{1}{c_{is}} - \frac{1}{c_{is}+d_{is}}
+$$
+
+where $a_{is}$ = events in the 7-day arm, $b_{is}$ = non-events in the 7-day arm, $c_{is}$ = events in the 14-day arm, $d_{is}$ = non-events in the 14-day arm.
+
+The **within-trial interaction** for trials $i \in \{\text{Yahav 2019},\, \text{BALANCE}\}$ is constructed following Altman & Bland (*BMJ*, 2003):
+
+$$
+\hat\gamma_{Wi} = \hat\theta_{i,\text{Pseud}} - \hat\theta_{i,\text{Other GN}}
+= \log\!\left(\frac{\text{RR}_{i,\text{Pseud}}}{\text{RR}_{i,\text{Other GN}}}\right)
+= \log(\text{RoRR}_i)
+$$
+
+$$
+\hat{V}_{Wi} = \hat{V}_{i,\text{Pseud}} + \hat{V}_{i,\text{Other GN}}
+$$
+
+Variances add because the two strata are independent within the same trial. This within-trial construction is exact for independent binary proportions; it is the Stage-1 analogue of the interaction parameter $\gamma_{Wi}$ in equation (2) of Riley et al.
+
+```{r build-sets}
+mk_es <- function(measure) {
+  escalc(measure = measure,
+         ai = seven_events, bi = seven_total - seven_events,
+         ci = fourteen_events, di = fourteen_total - fourteen_events,
+         data = dat)
+}
+
+build_sets <- function(measure) {
+  es <- mk_es(measure)
+  es$sei <- sqrt(es$vi)
+  other <- es |> filter(subgroup == "No Pseudomonas")   |> select(study, yi, vi, sei)
+  pseud <- es |> filter(subgroup == "Only Pseudomonas") |> select(study, yi, vi, sei)
+  both  <- intersect(es$study[es$subgroup == "No Pseudomonas"],
+                     es$study[es$subgroup == "Only Pseudomonas"])
+  inter <- lapply(both, function(s) {
+    p <- es[es$study == s & es$subgroup == "Only Pseudomonas", ]
+    o <- es[es$study == s & es$subgroup == "No Pseudomonas", ]
+    data.frame(study = s, yi = p$yi - o$yi, vi = p$vi + o$vi)
+  }) |> bind_rows()
+  inter$sei <- sqrt(inter$vi)
+  list(other = as.data.frame(other),
+       pseud = as.data.frame(pseud),
+       inter = as.data.frame(inter))
+}
+
+S_rr <- build_sets("RR")
+```
+
+The Stage-1 inputs to the RR models are:
+
+```{r stage1-table}
+bind_rows(
+  S_rr$other |> mutate(estimand = "Other Gram-negative"),
+  S_rr$pseud |> mutate(estimand = "Pseudomonas aeruginosa"),
+  S_rr$inter |> mutate(estimand = "Within-trial interaction (log RoRR)")
+) |>
+  mutate(
+    rr_point = exp(yi),
+    rr_lo    = exp(yi - 1.96 * sei),
+    rr_hi    = exp(yi + 1.96 * sei),
+    effect   = sprintf("%.2f (%.2f, %.2f)", rr_point, rr_lo, rr_hi)
+  ) |>
+  select(estimand, study, effect) |>
+  gt(groupname_col = "estimand") |>
+  tab_header(
+    title = md("**Stage-1 trial-level estimates**"),
+    subtitle = "Risk ratios (7-day vs. 14-day) or ratio of risk ratios (interaction), 95% CI"
+  ) |>
+  cols_label(study = "Trial", effect = "RR or RoRR (95% CI)") |>
+  tab_style(
+    style     = cell_text(weight = "bold"),
     locations = cells_row_groups()
   )
 ```
 
-The dataset contains aggregate-level data from randomized controlled trials comparing 7-day to 14-day antibiotic therapy for gram-negative bacteremia. Three trials --- Yahav 2019, von Dach 2020, and Molina 2022 --- provide data for the Other Gram-negative subgroup. Only the Yahav 2019 trial reports outcomes separately for the Pseudomonas subgroup, providing the only source of external evidence on the interaction between pathogen type and treatment duration. The BALANCE trial, the largest in the dataset, reports results for both subgroups and is the focus of this reanalysis.
+### 3.3 Stage 2: Bayesian Conjugate Normal-Normal Pooling
 
-The figure below shows the crude odds ratios (7-day vs 14-day) from all studies, organized by subgroup. No pooling is performed here --- each point represents an individual study estimate.
+Rather than performing expensive Markov Chain Monte Carlo (MCMC) simulations, we implement the **exact, closed-form conjugate normal-normal updating method**. 
 
-```{r forest-plot-subgroups, fig.height=6, fig.width=9}
-es_all <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = dat
-)
+As detailed by Christian Röver (2020) in his *Journal of Statistical Software* paper (*bayesmeta: An R Package for Bayesian Random-Effects Meta-Analysis*, Equation 14), the likelihood of the observed trial-level effect sizes $y_i$ is modeled as normally distributed around a common pooled effect $\mu$:
+$$y_i \mid \mu \sim \mathcal{N}(\mu, \sigma_i^2 + \tau^2)$$
+where $\sigma_i^2$ is the known within-study variance, and $\tau^2$ is the between-study variance. For our fixed-effects models, the between-study heterogeneity is set to zero ($\tau^2 = 0$), so the likelihood simplifies to:
+$$y_i \mid \mu \sim \mathcal{N}(\mu, \sigma_i^2)$$
 
-no_pseudo_idx <- which(dat$subgroup == "No Pseudomonas")
-pseudo_idx    <- which(dat$subgroup == "Only Pseudomonas")
+We specify a normal prior distribution on the pooled effect $\mu$ with prior mean $\mu_p$ and prior variance $\sigma_p^2$:
+$$\mu \sim \mathcal{N}(\mu_p, \sigma_p^2)$$
 
-es_ordered <- es_all[c(no_pseudo_idx, pseudo_idx), ]
-dat_ordered <- dat[c(no_pseudo_idx, pseudo_idx), ]
+Because a normal likelihood combined with a normal prior is conjugate, the posterior distribution $\mu \mid \vec{y}, \vec{\sigma}$ is also exactly normal:
+$$\mu \mid \vec{y}, \vec{\sigma} \sim \mathcal{N}(\hat{\mu}, \hat{\sigma}^2)$$
 
-n_no_pseudo <- length(no_pseudo_idx)
-n_pseudo    <- length(pseudo_idx)
+The posterior mean $\hat{\mu}$ and posterior variance $\hat{\sigma}^2$ are solved analytically:
+$$\hat{\mu} = \frac{\frac{\mu_p}{\sigma_p^2} + \sum_{i=1}^k \frac{y_i}{\sigma_i^2}}{\frac{1}{\sigma_p^2} + \sum_{i=1}^k \frac{1}{\sigma_i^2}}$$
 
-rows_no_pseudo <- 1:n_no_pseudo
-rows_pseudo    <- (n_no_pseudo + 3):(n_no_pseudo + 2 + n_pseudo)
+$$\hat{\sigma}^2 = \frac{1}{\frac{1}{\sigma_p^2} + \sum_{i=1}^k \frac{1}{\sigma_i^2}}$$
 
-par(mar = c(4, 0, 2, 2))
+In our analysis, the prior is centered at the null ($\mu_p = 0$). This simplifies the posterior equations to:
+$$\hat{\mu} = \hat{\sigma}^2 \sum_{i=1}^k \frac{y_i}{\sigma_i^2} \qquad \text{and} \qquad \hat{\sigma}^2 = \frac{1}{\frac{1}{\sigma_p^2} + \sum_{i=1}^k \frac{1}{\sigma_i^2}}$$
 
-forest(es_ordered$yi, es_ordered$vi,
-       slab = dat_ordered$study,
-       atransf = exp,
-       xlab = "Odds Ratio (7-day vs 14-day)",
-       header = TRUE,
-       refline = 0,
-       at = log(c(0.1, 0.25, 0.5, 1, 2, 4, 10)),
-       ylim = c(0.5, n_no_pseudo + n_pseudo + 6),
-       rows = c(rows_no_pseudo, rows_pseudo),
-       xlim = c(-5, 5))
-
-text(-5, n_no_pseudo + 1, "Other Gram-negative", pos = 4, font = 2)
-text(-5, n_no_pseudo + n_pseudo + 3, "Pseudomonas Only", pos = 4, font = 2)
-```
-
-## The Bernoulli Model
-
-We model individual-level binary outcomes (death vs. survival) using a Bernoulli likelihood with a logit link. The aggregate trial data from BALANCE is expanded into patient-level records, where $y_i \in \{0, 1\}$ denotes the outcome for patient $i$.
-
-The model is specified as:
-
-$$
-y_i \sim \text{Bernoulli}(p_i)
-$$
-$$
-\text{logit}(p_i) = \beta_0 + \beta_1 \cdot \text{treat}_i + \beta_2 \cdot \text{pseudo}_i + \beta_3 \cdot (\text{treat}_i \times \text{pseudo}_i)
-$$
-
-where:
-
-- $\beta_0$ (Intercept): log-odds of mortality for Other Gram-negative patients on 14-day treatment (reference group)
-- $\beta_1$ (treat): treatment effect of 7-day vs 14-day in the Other Gram-negative subgroup (log odds ratio)
-- $\beta_2$ (pseudo): difference in baseline mortality risk between Pseudomonas and Other Gram-negative patients (within the 14-day arm)
-- $\beta_3$ (treat $\times$ pseudo): interaction term --- how much the treatment effect differs in the Pseudomonas subgroup relative to Other Gram-negative
-
-The treatment effect in the Pseudomonas subgroup is $\beta_1 + \beta_3$.
-
-In `brms`, we use the parameterization `y ~ 0 + Intercept + treat * pseudo`, which treats the intercept as a regular population-level coefficient. This is required so that the joint prior draws for the intercept are returned on the raw (unadjusted) scale --- needed downstream for the risk-ratio pipeline.
-
-### Interpreting the Interaction as a Ratio of Odds Ratios
-
-The interaction parameter $\beta_3$ has a natural interpretation on the odds ratio scale. Let $\text{OR}_{\text{no pseudo}}$ denote the odds ratio for treatment (7-day vs 14-day) in the Other Gram-negative subgroup, and $\text{OR}_{\text{pseudo}}$ the corresponding odds ratio in the Pseudomonas subgroup. On the log scale:
-
-$$
-\log(\text{OR}_{\text{no pseudo}}) = \beta_1
-$$
-$$
-\log(\text{OR}_{\text{pseudo}}) = \beta_1 + \beta_3
-$$
-
-Therefore:
-
-$$
-\beta_3 = \log(\text{OR}_{\text{pseudo}}) - \log(\text{OR}_{\text{no pseudo}}) = \log\!\left(\frac{\text{OR}_{\text{pseudo}}}{\text{OR}_{\text{no pseudo}}}\right)
-$$
-
-Exponentiating, $\exp(\beta_3)$ is the **ratio of odds ratios** (ROR) between the two subgroups. A ROR of 1 (i.e., $\beta_3 = 0$) means the treatment effect is identical across subgroups. A ROR greater than 1 means that shorter treatment is relatively worse (higher odds of mortality) in the Pseudomonas subgroup compared to the Other Gram-negative subgroup. This is the key quantity for assessing effect modification by pathogen type.
-
-```{r expand-data}
-balance <- dat |> filter(grepl("BALANCE", study))
-
-expand_arm <- function(events, total, treat, pseudo) {
-  y <- c(rep(1L, events), rep(0L, total - events))
-  data.frame(y = y, treat = treat, pseudo = pseudo)
+#### Mathematical Mapping to the `conj()` Function
+This mathematical model is implemented directly in R inside the `conj()` function using the following mapping:
+```R
+conj <- function(d, tau) {
+  w <- 1 / d$sei^2
+  A <- sum(w); B <- sum(d$yi * w)
+  v <- 1 / (1 / tau^2 + A)
+  list(m = v * B, sd = sqrt(v))
 }
-
-balance_long <- bind_rows(
-  expand_arm(
-    events = balance$fourteen_events[balance$subgroup == "No Pseudomonas"],
-    total  = balance$fourteen_total[balance$subgroup == "No Pseudomonas"],
-    treat  = 0L, pseudo = 0L
-  ),
-  expand_arm(
-    events = balance$seven_events[balance$subgroup == "No Pseudomonas"],
-    total  = balance$seven_total[balance$subgroup == "No Pseudomonas"],
-    treat  = 1L, pseudo = 0L
-  ),
-  expand_arm(
-    events = balance$fourteen_events[balance$subgroup == "Only Pseudomonas"],
-    total  = balance$fourteen_total[balance$subgroup == "Only Pseudomonas"],
-    treat  = 0L, pseudo = 1L
-  ),
-  expand_arm(
-    events = balance$seven_events[balance$subgroup == "Only Pseudomonas"],
-    total  = balance$seven_total[balance$subgroup == "Only Pseudomonas"],
-    treat  = 1L, pseudo = 1L
-  )
-)
-
-cat("Total patients:", nrow(balance_long), "\n\n")
-cat("Patients by group:\n")
-print(table(treat = balance_long$treat, pseudo = balance_long$pseudo))
-cat("\nEvent rates:\n")
-print(round(tapply(balance_long$y, list(treat = balance_long$treat, pseudo = balance_long$pseudo), mean), 3))
 ```
 
-## Primary Analysis: Historical Priors
+* **Study Weights ($w_i = \frac{1}{\sigma_i^2}$)**: Defined in R as `w <- 1 / d$sei^2`.
+* **Sum of Study Precisions ($A = \sum_{i=1}^k \frac{1}{\sigma_i^2}$)**: Represented by `A <- sum(w)`.
+* **Precision-Weighted Sum of Data ($B = \sum_{i=1}^k \frac{y_i}{\sigma_i^2}$)**: Represented by `B <- sum(d$yi * w)`.
+* **Prior Precision ($\frac{1}{\sigma_p^2}$)**: Represented by `1 / tau^2` (where `tau` is the prior standard deviation $\sigma_p$).
+* **Posterior Variance ($\hat{\sigma}^2$)**: Represented by `v <- 1 / (1 / tau^2 + A)`.
+* **Posterior Mean ($\hat{\mu}$)**: Represented by `m = v * B`, which is algebraically identical to $\hat{\sigma}^2 \sum \frac{y_i}{\sigma_i^2}$.
+* **Posterior Standard Error ($\hat{\sigma}$)**: Represented by `sd = sqrt(v)`.
 
-### Prior Derivation
+Using these exact moments, we calculate the posterior cumulative probabilities and credible intervals analytically using R's built-in `pnorm()` and `qnorm()` functions.
 
-The primary analysis uses data-derived historical priors for the treatment effect and interaction parameters, incorporating evidence from external trials.
+### 3.4 Prior specification
 
-**Treatment effect prior ($\beta_1$):** We conducted a random-effects meta-analysis (with Knapp-Hartung adjustment) of the log odds ratios from three external trials reporting the treatment effect in patients with Other Gram-negative infections: Yahav 2019 (Other Gram-negative arm), von Dach 2020, and Molina 2022. The pooled estimate and its standard error serve as the mean and standard deviation of the Normal prior for $\beta_1$.
+Priors were pre-specified for the pooled effect parameter.
 
-```{r treatment-prior}
-external_no_pseudo <- dat |>
-  filter(study %in% c("von Dach 2020", "Molina 2022", "Yahav 2019 no Pseudomonas"))
-
-es_no_pseudo <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = external_no_pseudo
-)
-
-re_no_pseudo <- rma(yi, vi, slab = study, data = es_no_pseudo, test = "knha")
-
-treat_prior_mean <- as.numeric(re_no_pseudo$beta)
-treat_prior_sd   <- as.numeric(re_no_pseudo$se)
-
-par(mar = c(4, 0, 2, 2))
-
-forest(re_no_pseudo,
-       atransf = exp,
-       xlab = "Odds Ratio (7-day vs 14-day)",
-       header = TRUE,
-       refline = 0,
-       at = log(c(0.1, 0.25, 0.5, 1, 2, 4, 10)),
-       xlim = c(-6, 6))
-```
-
-**Interaction prior ($\beta_3$):** The only external evidence on the treatment-by-subgroup interaction comes from Yahav 2019, which reported outcomes separately for Pseudomonas and Other Gram-negative patients. The figure below shows the subgroup-specific odds ratios from Yahav 2019.
-
-```{r yahav-forest, fig.height=3.5, fig.width=9}
-yahav_dat <- dat |> filter(grepl("Yahav", study))
-
-es_yahav_plot <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = yahav_dat
-)
-
-par(mar = c(4, 0, 2, 2))
-
-forest(es_yahav_plot$yi, es_yahav_plot$vi,
-       slab = c("Yahav 2019 — Other Gram-negative", "Yahav 2019 — Pseudomonas Only"),
-       atransf = exp,
-       xlab = "Odds Ratio (7-day vs 14-day)",
-       header = TRUE,
-       refline = 0,
-       at = log(c(0.1, 0.25, 0.5, 1, 2, 4, 10)),
-       xlim = c(-6, 6),
-       ylim = c(0.5, 5))
-```
-
-The interaction is estimated as the difference between the two subgroup-specific log odds ratios, following the method of Altman & Bland (BMJ 2003; DOI: 10.1136/bmj.326.7382.219):
-
-$$
-\hat{\beta}_3 = \log(\text{OR}_{\text{pseudo}}) - \log(\text{OR}_{\text{no pseudo}})
-$$
-
-$$
-\text{SE}(\hat{\beta}_3) = \sqrt{V_{\text{pseudo}} + V_{\text{no pseudo}}}
-$$
-
-where $V$ denotes the sampling variance of each subgroup-specific log-OR. This yields a Normal prior for $\beta_3$ centered at the observed interaction with uncertainty reflecting both subgroup estimates.
-
-**Other parameters:** The intercept ($\beta_0$) and baseline Pseudomonas effect ($\beta_2$) receive weakly informative Normal(0, 1.5) priors, which on the logit scale cover a wide but not implausible range of baseline risks.
-
-```{r interaction-prior}
-yahav <- dat |> filter(grepl("Yahav", study))
-
-es_yahav <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = yahav
-)
-
-yahav_no_pseudo <- es_yahav |> filter(subgroup == "No Pseudomonas")
-yahav_pseudo    <- es_yahav |> filter(subgroup == "Only Pseudomonas")
-
-interaction_mean <- as.numeric(yahav_pseudo$yi - yahav_no_pseudo$yi)
-interaction_sd   <- sqrt(as.numeric(yahav_pseudo$vi + yahav_no_pseudo$vi))
-```
+**Pooled effect (Intercept, $\mu$).** The two subgroup models (Other GN, Pseudomonas) use $\sigma_p = 0.82$. On the ratio scale, $\exp(\pm 1.96 \times 0.82) \approx (0.20,\, 5.0)$, covering the full clinically plausible range for an antibiotic-duration main effect. The **interaction model uses a tighter prior** with $\sigma_p = 0.35$, giving $\exp(\pm 1.96 \times 0.35) \approx (0.50,\, 2.0)$ on the ratio-of-risk-ratios scale. A narrower prior is appropriate for the interaction because effect-modification effects are expected to be smaller in magnitude than main effects, and only two trials inform the interaction, so it is regularised more strongly toward the null. All priors are symmetric on the log scale (no directional prior belief).
 
 ```{r prior-table}
-prior_summary <- tibble(
-  Parameter = c("Intercept (β₀)", "Treatment (β₁)", "Pseudomonas baseline (β₂)", "Interaction (β₃)"),
-  Prior = c(
-    "Normal(0, 1.5)",
-    sprintf("Normal(%.2f, %.2f)", treat_prior_mean, treat_prior_sd),
-    "Normal(0, 1.5)",
-    sprintf("Normal(%.2f, %.2f)", interaction_mean, interaction_sd)
-  ),
-  Source = c(
-    "Weakly informative",
-    "Meta-analysis: Yahav 2019, von Dach 2020, Molina 2022",
-    "Weakly informative",
-    "Yahav 2019 (Pseudomonas vs Other Gram-negative)"
-  )
-)
-kable(prior_summary, caption = "Prior specifications for the historical model")
+tibble(
+  Model     = c("Other GN", "Pseudomonas", "Interaction"),
+  Estimand  = c("Pooled log-RR", "Pooled log-RR", "Pooled log-RoRR"),
+  `Prior: μ`  = c("Normal(0, 0.82)", "Normal(0, 0.82)", "Normal(0, 0.35)")
+) |>
+  gt() |>
+  tab_header(title = md("**Stage-2 prior specifications**")) |>
+  cols_label(`Prior: μ` = "Intercept prior")
 ```
 
-The model was fit in `brms` with the `0 + Intercept + treat * pseudo` parameterization, 4 chains, 10,000 iterations per chain (5,000 warmup), `adapt_delta = 0.95`, and `sample_prior = "yes"` so that prior draws are available alongside the posterior. The fit is cached at `fits/primary.rds`.
+---
 
-### Posterior Results
+## 4. Trial-Level Data (Figure 1)
 
-```{r informative-posterior-fit, results='hide'}
-balance_fit <- readRDS("fits/primary.rds")
+Figure 1 presents the data without pooling. The left panel shows per-trial, per-subgroup risk ratios together with 7-day and 14-day event counts. Squares are scaled by precision (inverse-variance weight). The right panel displays the within-trial interaction (ratio of risk ratios; circles following Fisher et al.'s convention to distinguish interaction estimates from subgroup estimates). Trials that do not provide both strata are labelled "Insufficient data."
+
+```{r figure1, fig.cap="Figure 1. Trial-level risk ratios (left) and within-trial interactions (right). No pooling is performed."}
+knitr::include_graphics("figures/figure1_forest_rr.png")
 ```
 
-#### Diagnostics
+Key observations from the data:
+- All four Other GN trial estimates are below RR = 1, consistently suggesting benefit from shorter courses.
+- Pseudomonas estimates show more variability; SHORTEN2 and BALANCE show RRs near or above 1.
+- Both available within-trial interaction estimates (Yahav 2019 and BALANCE) are greater than 1 (circles to the right of the dashed line), suggesting the 7-day course is relatively less beneficial — or potentially harmful — in Pseudomonas patients compared with Other GN patients.
 
-Trace plots show the four MCMC chains exploring the parameter space and confirmed well-mixing chains.
+---
 
-```{r informative-trace, fig.height=6}
-plot(balance_fit)
-```
+## 5. Bayesian Conjugate Calculations
 
-Posterior predictive checks compare the observed event rate (dark line) to the distribution of event rates predicted by the model (light histograms), separately for each treatment-by-subgroup combination. The observed statistic falls within the bulk of the simulated distribution, confirming the model's adequacy.
+We calculate the exact posteriors for each of the three estimands using our conjugate closed-form updating function:
 
-```{r informative-ppcheck, fig.height=5}
-balance_fit$data$treat_pseudo <- interaction(
-  ifelse(balance_fit$data$treat, "7-day", "14-day"),
-  ifelse(balance_fit$data$pseudo, "Pseudomonas", "Other Gram-negative"),
-  sep = " / "
-)
-
-pp_check(balance_fit, "stat_grouped", group = "treat_pseudo") +
-  labs(x = "Death probability")
-```
-
-```{r informative-summary}
-summary(balance_fit)
-```
-
-## Sensitivity Analysis: Skeptical Prior
-
-To further assess robustness, we fit a second model using skeptical priors for both the treatment effect and the interaction term. Both priors are centered at zero, replacing the data-derived historical prior for the treatment effect used in the primary analysis. The treatment effect receives a Normal(0, 0.71) prior, and the interaction receives a tighter Normal(0, 0.36) prior. This tests whether the signal of differential treatment effect persists when prior information actively downweights both large overall effects and subgroup differences.
-
-A Normal(0, 0.71) prior on the log-OR scale places 95% of prior mass on ORs between approximately 0.25 and 4.0. A Normal(0, 0.36) prior on the log-ROR scale places 95% of prior mass on RORs between approximately 0.49 and 2.03, meaning the prior considers it very unlikely a priori that the treatment effect in one subgroup would be more than double that in the other.
-
-```{r skeptic-prior-table}
-skeptic_prior_summary <- tibble(
-  Parameter = c("Intercept (β₀)", "Treatment (β₁)", "Pseudomonas baseline (β₂)", "Interaction (β₃)"),
-  Prior = c(
-    "Normal(0, 1.5)",
-    "Normal(0, 0.71)",
-    "Normal(0, 1.5)",
-    "Normal(0, 0.36)"
-  ),
-  Rationale = c(
-    "Same as primary analysis",
-    "SD of 0.71 places 95% prior mass on ORs between ~0.25 and ~4 — skeptical of large treatment effects",
-    "Same as primary analysis",
-    "SD of 0.36 places 95% prior mass on RORs between ~0.49 and ~2.03 — skeptical of subgroup differences"
-  )
-)
-kable(skeptic_prior_summary, caption = "Prior specifications for the skeptical sensitivity analysis")
-```
-
-The fit is cached at `fits/skeptic.rds`.
-
-### Posterior Results
-
-```{r skeptic-posterior-fit, results='hide'}
-skeptic_fit <- readRDS("fits/skeptic.rds")
-```
-
-#### Diagnostics
-
-```{r skeptic-trace, fig.height=6}
-plot(skeptic_fit)
-```
-
-```{r skeptic-ppcheck, fig.height=5}
-skeptic_fit$data$treat_pseudo <- interaction(
-  ifelse(skeptic_fit$data$treat, "7-day", "14-day"),
-  ifelse(skeptic_fit$data$pseudo, "Pseudomonas", "Other Gram-negative"),
-  sep = " / "
-)
-
-pp_check(skeptic_fit, "stat_grouped", group = "treat_pseudo") +
-  labs(x = "Death probability")
-```
-
-Trace plots and posterior predictive checks for the skeptical model show good mixing and calibration.
-
-```{r skeptic-posterior-summary}
-summary(skeptic_fit)
-```
-
-## Sensitivity Analysis: Weakly Informative Priors
-
-As a further sensitivity analysis, we fit a third model replacing the data-derived historical priors with weakly informative priors centered at zero (i.e., no prior directional information).
-
-```{r weak-prior-table}
-weak_prior_summary <- tibble(
-  Parameter = c("Intercept (β₀)", "Treatment (β₁)", "Pseudomonas baseline (β₂)", "Interaction (β₃)"),
-  Prior = c("Normal(0, 1.5)", "Normal(0, 0.82)", "Normal(0, 1.5)", "Normal(0, 0.71)"),
-  Rationale = c(
-    "Same as primary analysis",
-    "SD of 0.82 places 95% prior mass on ORs between ~0.2 and ~5",
-    "Same as primary analysis",
-    "SD of 0.71 places 95% prior mass on RORs between ~0.25 and ~4"
-  )
-)
-kable(weak_prior_summary, caption = "Prior specifications for the sensitivity analysis")
-```
-
-Both priors are symmetric and centered at the null (OR = 1), reflecting agnosticism about the direction of the treatment effect and interaction. The fit is cached at `fits/sensitivity.rds`.
-
-### Posterior Results
-
-```{r weak-posterior-fit, results='hide'}
-weak_fit <- readRDS("fits/sensitivity.rds")
-```
-
-#### Diagnostics
-
-```{r weak-trace, fig.height=6}
-plot(weak_fit)
-```
-
-```{r weak-ppcheck, fig.height=5}
-weak_fit$data$treat_pseudo <- interaction(
-  ifelse(weak_fit$data$treat, "7-day", "14-day"),
-  ifelse(weak_fit$data$pseudo, "Pseudomonas", "Other Gram-negative"),
-  sep = " / "
-)
-
-pp_check(weak_fit, "stat_grouped", group = "treat_pseudo") +
-  labs(x = "Death probability")
-```
-
-Trace plots and posterior predictive checks for the weakly informative model show similarly good mixing and calibration, confirming that the choice of prior does not introduce pathological behaviour in the sampling.
-
-```{r weak-posterior-summary}
-summary(weak_fit)
-```
-
-## Posterior Comparison Across Models — Odds Ratio Scale
-
-The figure below compares the posterior distributions across all three prior specifications (historical, skeptical, weakly informative) for three estimands: the treatment effect in the Pseudomonas subgroup, the treatment effect in the Other Gram-negative subgroup, and the interaction (ratio of odds ratios). Each panel overlays the prior (gray outline) on the posterior (filled), with the posterior probability of harm/benefit annotated.
-
-```{r figure-letter-or, out.width="100%"}
-knitr::include_graphics("figures/figure_letter.png")
-```
-
-The interaction posteriors (ratio of odds ratios) are concordant across all three models, indicating that the signal of effect modification by pathogen type is robust to the choice of prior. The subgroup-specific posteriors are also concordant between the primary (historical) and weakly informative models, but the skeptical model — which replaces the historical treatment-effect prior with a null-centered Normal(0, 0.71) — shifts the Other Gram-negative subgroup posterior toward what the BALANCE data alone supports. This is expected: the historical prior was contributing substantial information to that subgroup in the primary analysis, and removing it lets BALANCE drive the estimate.
-
-## Posterior Results — Risk Ratio Scale
-
-While the model is parameterized on the log-odds scale, the risk ratio is often more clinically interpretable. **Posterior** subgroup-specific risk ratios are computed via `marginaleffects::avg_comparisons()` with `comparison = "lnratioavg"` and `by = "pseudo"`, which returns the posterior of
-
-$$
-\log \text{RR}_{\text{subgroup}}
-= \log\!\left(
-\frac{\overline{P}(Y = 1 \mid \text{treat} = 1, \text{subgroup})}
-     {\overline{P}(Y = 1 \mid \text{treat} = 0, \text{subgroup})}
-\right)
-$$
-
-within each `pseudo` level. The ratio of risk ratios (RoRR) is formed as $\text{RR}_{\text{pseudo}} / \text{RR}_{\text{no pseudo}}$ on the draws. Because the model contains no covariates other than `treat` and `pseudo`, the within-cell average reduces to the cell prediction itself, so this is algebraically identical to the manual `predictions()`-based ratio used in earlier drafts (verified numerically; see `test_rr_avg_comparisons.R`).
-
-The **prior** on the RR scale is visualised by transforming the analyst-specified prior on the log-OR (and on the interaction) through a *fixed* baseline event rate — the observed BALANCE 14-day arm rate in each subgroup. This fixed-baseline construction (see `get_prior_logrr_draws()` in `analysis.R`) avoids the spiky mixture that would arise from marginalising the wide `Normal(0, 1.5)` prior on the raw intercept through `plogis()`, and isolates what the analyst's belief about the log-OR effect implies for the risk ratio at a clinically realistic baseline.
-
-### Translating priors to the risk-ratio scale
-
-Because the model is parameterized on the log-odds scale but the results are reported on the risk-ratio scale, each prior must be re-expressed as an implied prior on the RR (for the subgroup treatment effect) and on the RoRR — ratio of risk ratios — (for the interaction). We use the closed-form fixed-baseline conversion of Zhang & Yu (*JAMA* 1998; doi:10.1001/jama.280.19.1690):
-
-$$
-\text{RR} = \frac{\text{OR}}{p_0\,(\text{OR} - 1) + 1}
-$$
-
-with $p_0$ set to the BALANCE 14-day event rate in the relevant subgroup: 15.4% (180/1172) in the Other Gram-negative subgroup for the treatment-effect prior, and 20.5% (17/83) in the Pseudomonas subgroup for the interaction (RoRR) prior. For each Normal($\mu$, $\sigma$) prior on the log-OR scale we push the median ($\mu$) and the 95% endpoints ($\mu \pm 1.96\,\sigma$) through this map, with $\text{OR} = \exp(\text{log-OR})$.
-
-The treatment-effect RR uses log-OR $= \beta_{\text{treat}}$ at $p_0^{\text{no pseudo}} = 0.154$. The RoRR is the ratio of the two subgroup risk ratios,
-
-$$
-\text{RoRR}
-= \frac{\text{RR}_{\text{pseudo}}}{\text{RR}_{\text{no pseudo}}},
-$$
-
-where $\text{RR}_{\text{no pseudo}}$ is obtained from log-OR $= \beta_{\text{treat}}$ at $p_0^{\text{no pseudo}}$ and $\text{RR}_{\text{pseudo}}$ from log-OR $= \beta_{\text{treat}} + \beta_{\text{int}}$ at $p_0^{\text{pseudo}} = 0.205$. The interaction prior supplies $\beta_{\text{int}}$; we evaluate the conversion with $\beta_{\text{treat}}$ held at the paired treat prior's mean (0.07 for the historical model; 0 for the skeptical and weakly informative models), so the RoRR reflects the joint prior median actually assumed by each model.
-
-Doi *et al.* (*J Clin Epidemiol* 2020; doi:10.1016/j.jclinepi.2020.08.019) endorse this fixed-baseline construction for translating prior or posterior OR-scale limits to the RR scale. The code lives in Step 11 of `analysis.R`.
-
-```{r prior-rr-summary-prep}
-# Re-derive the same inputs the analysis script computes in Step 1 + Step 10
-# so this report stays self-contained (no source("analysis.R") needed).
-external_no_pseudo <- dat |>
-  filter(study %in% c("von Dach 2020", "Molina 2022", "Yahav 2019 no Pseudomonas"))
-es_no_pseudo <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = external_no_pseudo
-)
-re_no_pseudo <- rma(yi, vi, data = es_no_pseudo, test = "knha")
-treat_prior_mean <- as.numeric(re_no_pseudo$beta)
-treat_prior_sd   <- as.numeric(re_no_pseudo$se)
-
-yahav <- dat |> filter(grepl("Yahav", study))
-es_yahav <- escalc(
-  measure = "OR",
-  ai = seven_events, bi = seven_total - seven_events,
-  ci = fourteen_events, di = fourteen_total - fourteen_events,
-  data = yahav
-)
-yahav_no_pseudo <- es_yahav |> filter(subgroup == "No Pseudomonas")
-yahav_pseudo    <- es_yahav |> filter(subgroup == "Only Pseudomonas")
-interaction_mean <- as.numeric(yahav_pseudo$yi - yahav_no_pseudo$yi)
-interaction_sd   <- sqrt(as.numeric(yahav_pseudo$vi + yahav_no_pseudo$vi))
-
-balance <- dat |> filter(grepl("BALANCE", study))
-baseline_no_pseudo <- balance$fourteen_events[balance$subgroup == "No Pseudomonas"] /
-                     balance$fourteen_total [balance$subgroup == "No Pseudomonas"]
-baseline_pseudo    <- balance$fourteen_events[balance$subgroup == "Only Pseudomonas"] /
-                     balance$fourteen_total [balance$subgroup == "Only Pseudomonas"]
-
-or_prior_to_rr <- function(mu, sigma, p0) {
-  q975 <- qnorm(0.975)
-  list(
-    med = plogis(qlogis(p0) + mu) / p0,
-    lo  = plogis(qlogis(p0) + mu - q975 * sigma) / p0,
-    hi  = plogis(qlogis(p0) + mu + q975 * sigma) / p0
-  )
-}
-interaction_prior_to_rorr <- function(mu_int, sigma_int, mu_treat,
-                                      p0_no_pseudo, p0_pseudo) {
-  q975 <- qnorm(0.975)
-  rr_no_pseudo <- plogis(qlogis(p0_no_pseudo) + mu_treat) / p0_no_pseudo
-  rr_p <- function(b_int) plogis(qlogis(p0_pseudo) + mu_treat + b_int) / p0_pseudo
-  list(
-    med = rr_p(mu_int) / rr_no_pseudo,
-    lo  = rr_p(mu_int - q975 * sigma_int) / rr_no_pseudo,
-    hi  = rr_p(mu_int + q975 * sigma_int) / rr_no_pseudo
-  )
+```{r run-calculations}
+# Exact conjugate normal-normal posterior for the pooled effect mu (Röver, 2020)
+conj <- function(d, tau) {
+  w <- 1 / d$sei^2
+  A <- sum(w); B <- sum(d$yi * w)
+  v <- 1 / (1 / tau^2 + A)
+  list(m = v * B, sd = sqrt(v))
 }
 
-hist_treat_rr         <- or_prior_to_rr(treat_prior_mean, treat_prior_sd, baseline_no_pseudo)
-hist_interaction_rorr <- interaction_prior_to_rorr(
-  interaction_mean, interaction_sd, treat_prior_mean,
-  baseline_no_pseudo, baseline_pseudo
-)
-skeptic_treat_rr         <- or_prior_to_rr(0, 0.71, baseline_no_pseudo)
-skeptic_interaction_rorr <- interaction_prior_to_rorr(0, 0.36, 0, baseline_no_pseudo, baseline_pseudo)
-weak_treat_rr            <- or_prior_to_rr(0, 0.82, baseline_no_pseudo)
-weak_interaction_rorr    <- interaction_prior_to_rorr(0, 0.71, 0, baseline_no_pseudo, baseline_pseudo)
+# Subgroup priors (tau = 0.82); Interaction prior (tau = 0.35)
+tau_fixed <- 0.82
+tau_inter <- 0.35
 
-fmt_med_ci <- function(x) sprintf("%.2f (%.2f - %.2f)", x$med, x$lo, x$hi)
+post_other <- conj(S_rr$other, tau_fixed)
+post_pseud <- conj(S_rr$pseud, tau_fixed)
+post_inter <- conj(S_rr$inter, tau_inter)
+```
 
-prior_rr_summary <- tibble::tibble(
-  Model = c("Historical (primary)", "Skeptical", "Weakly informative"),
-  `Treatment effect, RR (median, 95% interval)` = c(
-    fmt_med_ci(hist_treat_rr),
-    fmt_med_ci(skeptic_treat_rr),
-    fmt_med_ci(weak_treat_rr)
-  ),
-  `Interaction, RoRR (median, 95% interval)` = c(
-    fmt_med_ci(hist_interaction_rorr),
-    fmt_med_ci(skeptic_interaction_rorr),
-    fmt_med_ci(weak_interaction_rorr)
+---
+
+## 6. Pooled Posteriors & Prior Sensitivity (Figure 2)
+
+Figure 2 is the composite results visualization generated in `01_main.R`. 
+
+* **Panel A (Primary Analysis)** displays the exact posterior density distributions (filled curves) compared to their prior distributions (gray outlines). The shaded regions represent the directional posterior probability callouts.
+* **Panel B (Prior Sensitivity)** displays the posterior 95% credible intervals (colored ribbons) plotted over the widening prior distribution funnels (gray funnels) across a range of prior standard deviations ($\sigma_p \in [0.095, 1.18]$), alongside the corresponding directional posterior probability curves.
+
+```{r figure2, out.width="100%", fig.cap="Figure 2. (A) Primary-analysis posterior distributions (filled) and priors (gray outline) for the three estimands on the risk ratio scale; the percentage is the posterior probability in the highlighted region, with posterior median and 95% HDI. (B) Prior-sensitivity analysis across a range of intercept-prior widths: posterior 95% HDI (colored ribbon over the gray prior funnel) and the directional posterior probability, with the primary analysis highlighted."}
+knitr::include_graphics("figures/figure2.png")
+```
+
+### 6.1 Numerical summaries
+
+We compute the exact pooled medians, 95% credible intervals, and directional posterior probabilities using R's analytical normal probability functions:
+
+```{r summaries}
+# Directional tail probability (%)
+# P(mu < 0 | data) for below, P(mu > 0 | data) for above
+prob_dir <- function(post, direction) {
+  z <- post$m / post$sd
+  (if (direction == "above") pnorm(z) else pnorm(-z)) * 100
+}
+
+pp_other <- round(prob_dir(post_other, "below"), 0)
+pp_pseud <- round(prob_dir(post_pseud, "above"), 0)
+pp_inter <- round(prob_dir(post_inter, "above"), 0)
+
+# 95% credible interval boundaries (z = 1.96)
+crit_val <- qnorm(0.975)
+
+summ_tbl <- tibble(
+  Estimand   = c("Other Gram-negative", "Pseudomonas aeruginosa", "Interaction (RoRR)"),
+  Metric     = c("RR (7 vs 14d)", "RR (7 vs 14d)", "Ratio of Risk Ratios"),
+  Median     = sprintf("%.2f", exp(c(post_other$m, post_pseud$m, post_inter$m))),
+  `95% CrI`  = sprintf("%.2f – %.2f",
+               exp(c(post_other$m - crit_val * post_other$sd, 
+                     post_pseud$m - crit_val * post_pseud$sd, 
+                     post_inter$m - crit_val * post_inter$sd)),
+               exp(c(post_other$m + crit_val * post_other$sd, 
+                     post_pseud$m + crit_val * post_pseud$sd, 
+                     post_inter$m + crit_val * post_inter$sd))),
+  `P(direction)` = c(
+    glue("{pp_other}% P(RR < 1)"),
+    glue("{pp_pseud}% P(RR > 1)"),
+    glue("{pp_inter}% P(RoRR > 1)")
   )
 )
+
+summ_tbl |>
+  gt() |>
+  tab_header(
+    title    = md("**Pooled posterior summaries — Risk Ratio scale**"),
+    subtitle = "Median, 95% Credible Interval (CrI), and directional probability"
+  ) |>
+  cols_label(
+    Estimand       = "Subgroup / Estimand",
+    Metric         = "Effect measure",
+    `95% CrI`      = "95% CrI",
+    `P(direction)` = "Directional probability"
+  ) |>
+  tab_footnote(
+    "RoRR = Ratio of Risk Ratios (Pseudomonas ÷ Other GN). Values > 1 indicate the 7-day course is relatively worse in Pseudomonas patients.",
+    locations = cells_body(columns = Estimand, rows = 3)
+  )
 ```
 
-```{r prior-rr-summary-table}
-kable(prior_rr_summary, caption = "Analyst-specified priors translated to the RR / RoRR scale via the Zhang & Yu fixed-baseline conversion (Other Gram-negative baseline 15.4% for the treatment effect; Pseudomonas baseline 20.5% for the interaction).")
+
+## 9. Summary
+
+This analysis implements a two-stage Bayesian IPD meta-analysis following the recommendations of Riley et al. (2020). The interaction estimand is derived from within-trial evidence only, avoiding ecological bias. We calculate the exact pooled posterior distributions analytically in closed form under the conjugate normal-normal model from Röver (2020).
+
+```{r final-summary-table}
+summ_tbl |>
+  gt() |>
+  tab_header(
+    title    = md("**Primary results — Risk Ratio scale**"),
+    subtitle = "All estimates from Stage-2 Bayesian fixed-effects meta-analysis"
+  ) |>
+  cols_label(
+    Estimand       = "Subgroup / Estimand",
+    Metric         = "Effect measure",
+    `95% CrI`      = "95% CrI",
+    `P(direction)` = "Directional probability"
+  )
 ```
 
-```{r figure-letter-rr, out.width="100%"}
-knitr::include_graphics("figures/figure_letter_rr.png")
-```
+**Key findings:**
 
-::: {.callout-note}
-## Why the prior slab in the Pseudomonas panel does not visually peak at RR = 1
+1. In patients with **Other Gram-negative** bacteremia, the pooled posterior strongly favors the 7-day course (RR < 1, posterior probability of benefit = `r pp_other`%).
+2. In patients with ***Pseudomonas aeruginosa*** bacteremia, the posterior is highly uncertain and spans the null (posterior probability of harm = `r pp_pseud`%).
+3. The **within-trial interaction** (RoRR) is consistently above 1, indicating that *Pseudomonas aeruginosa* status modifies the treatment effect of antibiotic duration (posterior probability of interaction = `r pp_inter`%). This interaction signal is robust to prior choice.
 
-All priors are specified on the log-odds scale and are centered at the null (log-OR = 0). For each posterior draw, the implied log-RR is obtained via the fixed-baseline Zhang & Yu map, $\text{log-RR} = \log\!\big(\text{plogis}(\text{logit}(p_0) + \text{log-OR}) / p_0\big)$. This map is monotonic but strongly nonlinear: as log-OR grows, log-RR saturates at the ceiling $\log(1/p_0)$, while as log-OR shrinks, log-RR is unbounded below. A symmetric Normal on log-OR therefore maps to a left-skewed distribution on log-RR — the *median* stays at RR = 1 (since the map sends 0 to 0), but the *mode* and the bulk of the density shift toward the ceiling. The effect is most visible in the Pseudomonas subgroup because the combined treatment + interaction prior is wide (e.g.\ SD $\approx \sqrt{0.82^2 + 0.71^2} \approx 1.08$ in the weakly informative model) and the Pseudomonas baseline rate (20.5%) places the ceiling $\log(1/0.205) \approx 1.59$ inside the plotted x-axis range, so the prior mass piles up against it. The displayed slab is therefore expected to look off-center even though the prior median is exactly at RR = 1.
-:::
+---
 
-Findings on the risk-ratio scale mirror the odds-ratio results: the interaction (RoRR) posterior is concordant across all three priors and the qualitative direction of effect modification by pathogen type is preserved, while the Other Gram-negative subgroup posterior under the skeptical prior reflects the BALANCE data more directly than the historical-prior models.
+## References
+
+- Riley RD, Debray TP, Fisher D, et al. Individual participant data meta-analysis to examine interactions between treatment effect and participant-level covariates: Statistical recommendations for conduct and planning. *Statistics in Medicine.* 2020;39:2115–2137. https://doi.org/10.1002/sim.8516
+
+- Röver C. bayesmeta: An R Package for Bayesian Random-Effects Meta-Analysis. *Journal of Statistical Software.* 2020;93(6):1–18. https://doi.org/10.18637/jss.v093.i06
+
+- Smith TC, Spiegelhalter DJ, Thomas A. Bayesian approaches to random-effects meta-analysis: a comparative study. *Statistics in Medicine.* 1995;14(24):2685–2699. https://doi.org/10.1002/sim.4780142408
+
+- Altman DG, Bland JM. Interaction revisited: the difference between two estimates. *BMJ.* 2003;326:219. https://doi.org/10.1136/bmj.326.7382.219
