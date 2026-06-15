@@ -29,7 +29,7 @@ pacman::p_load(
 
 ## 1. Background and Research Questions
 
-**Clinical question.** Should gram-negative bacteremia be treated for 7 days or 14 days? Several large randomised trials — Yahav 2019, BALANCE, von Dach 2020, Molina 2022, and SHORTEN2 — have compared these durations, but none was individually powered to detect whether the answer differs by pathogen. *Pseudomonas aeruginosa* is of particular concern: it is intrinsically resistant to many antibiotics, and a shorter course may be insufficient to eradicate it, potentially leading to higher mortality.
+**Clinical question.** Should gram-negative bacteremia be treated for 7 days or 14 days? Several large randomised trials — Yahav 2019, BALANCE, von Dach 2020, Molina 2022, and SHORTEN2 — have compared these durations, but none was individually powered to detect whether the answer differs by pathogen. 
 
 **Statistical question.** Is there a treatment–pathogen interaction, i.e. does the 7-day vs. 14-day risk ratio for all-cause mortality differ between (a) patients infected with *Pseudomonas aeruginosa* and (b) patients infected with other gram-negative organisms? Pooling across trials increases power to detect such an interaction — but only if the analysis is conducted correctly.
 
