@@ -281,27 +281,21 @@ fig_theme <- theme_bw(base_size = fs_axis_txt, base_family = font_main) +
     plot.margin      = margin(5, 3, 5, 3)
   )
 
-rr_breaks   <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
-rorr_breaks <- c(0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10)
+rr_breaks   <- c(0.5, 0.7, 1, 1.5, 2)
+rorr_breaks <- c(0.5, 0.7, 1, 1.5, 2)
 
 colors          <- met.brewer(name = "Isfahan1", n = 8, type = "discrete")
 col_no_pseudo   <- colors[2]
 col_pseudo      <- colors[8]
 col_interaction <- colors[5]
 
-make_panel <- function(post, prior_tau, fill_col, threshold, direction,
+make_panel <- function(post, fill_col, threshold, direction,
                         prob_pct, x_breaks, x_labels, x_title, xlims,
                         panel_title) {
-  post_dist  <- dist_normal(post$m, post$sd)
-  prior_dist <- dist_normal(0, prior_tau)
+  post_dist <- dist_normal(post$m, post$sd)
 
   if (direction == "below") {
     p <- ggplot() +
-      stat_slab(
-        aes(xdist = prior_dist, y = 0),
-        fill = NA, color = "gray20", linewidth = 0.5, alpha = 0.3,
-        normalize = "panels"
-      ) +
       stat_slab(
         aes(xdist = post_dist, y = 0,
             fill = after_stat(x < threshold)),
@@ -311,11 +305,6 @@ make_panel <- function(post, prior_tau, fill_col, threshold, direction,
       scale_fill_manual(values = c("TRUE" = fill_col, "FALSE" = "gray80"))
   } else {
     p <- ggplot() +
-      stat_slab(
-        aes(xdist = prior_dist, y = 0),
-        fill = NA, color = "gray20", linewidth = 0.5, alpha = 0.3,
-        normalize = "panels"
-      ) +
       stat_slab(
         aes(xdist = post_dist, y = 0,
             fill = after_stat(x > threshold)),
@@ -364,7 +353,7 @@ make_panel <- function(post, prior_tau, fill_col, threshold, direction,
 # is shaded: Pseudomonas/Interaction -> "above", Other GN -> "below".
 # The single-column posteriors are not saved on their own; they form column A
 # of the combined Figure 2 assembled in Step 9.
-xlim2 <- log(c(0.1, 10))
+xlim2 <- log(c(0.4, 2.5))
 
 # ---- Step 8: Print pooled summaries ----
 summ <- function(label, post, prob, dir_lt) {
@@ -381,8 +370,12 @@ cat("\n")
 
 # =========================================================================
 # Step 9: Figure 2 — combined primary-analysis + prior-sensitivity composite.
-# Two labelled columns: A = primary-analysis posteriors (the Step 6 panels),
-# B = prior-sensitivity ribbons + posterior-probability strips.
+# Two labelled columns: A = primary-analysis posteriors (the Step 6 panels,
+# priors not drawn so the x-axis can zoom onto the posteriors), B = a single
+# posterior 95%-CrI ribbon per model traced across the intercept-prior SD
+# grid. The prior funnel is omitted because it is identical across models
+# (N(0, sigma)) and added only visual redundancy; the primary-analysis
+# sigma is marked with a dotted horizontal line and a directional-% label.
 #
 # Every element is the exact conjugate normal-normal posterior (Step 4 conj()),
 # evaluated across the intercept-prior width grid below. No MCMC, no caching.
@@ -395,17 +388,17 @@ sens_sigmas <- seq(0.095, 1.18, 0.01)
 
 # ---- 9b: rebuild the three LEFT posterior panels (same calls as Step 7) ----
 p_pseud <- make_panel(
-  post_pseud, tau_fixed, fill_col = col_pseudo, threshold = 0,
+  post_pseud, fill_col = col_pseudo, threshold = 0,
   direction = "above", prob_pct = pp_pseud,
   x_breaks = log(rr_breaks), x_labels = rr_breaks,
   x_title = "Risk Ratio", xlims = xlim2, panel_title = "*Pseudomonas* Subgroup")
 p_other <- make_panel(
-  post_other, tau_fixed, fill_col = col_no_pseudo, threshold = 0,
+  post_other, fill_col = col_no_pseudo, threshold = 0,
   direction = "below", prob_pct = pp_other,
   x_breaks = log(rr_breaks), x_labels = rr_breaks,
   x_title = "Risk Ratio", xlims = xlim2, panel_title = "Other Gram-negative Subgroup")
 p_int <- make_panel(
-  post_inter, tau_inter, fill_col = col_interaction, threshold = 0,
+  post_inter, fill_col = col_interaction, threshold = 0,
   direction = "above", prob_pct = pp_inter,
   x_breaks = log(rorr_breaks), x_labels = rorr_breaks,
   x_title = "Ratio of Risk Ratios", xlims = xlim2,
@@ -444,133 +437,69 @@ ribbon_poly2 <- function(band, lo, hi) {
   tibble(x = c(a$val, rev(b$val)), y = c(a$sigma, rev(b$sigma)))
 }
 
-make_sens_ribbon <- function(d, fill_col, primary_sigma, x_title, panel_title,
-                             post_lab_side = "auto") {
-  post_band  <- sens_bands(d, sens_sigmas, "post")
-  prior_band <- sens_bands(d, sens_sigmas, "prior")
-  post_med   <- sm(post_band$sigma,  post_band$m)
-  prior_med  <- sm(prior_band$sigma, prior_band$m)
-  prim       <- post_band[which.min(abs(post_band$sigma - primary_sigma)), ]
+make_sens_ribbon <- function(d, fill_col, primary_sigma, direction, prim_prob,
+                             x_title, panel_title) {
+  post_band <- sens_bands(d, sens_sigmas, "post")
+  post_med  <- sm(post_band$sigma, post_band$m)
+  prim      <- post_band[which.min(abs(post_band$sigma - primary_sigma)), ]
+  prim_post <- conj(d, primary_sigma)
 
-  # primary-analysis posterior (closed form) for the highlighted point-interval
-  prim_post  <- conj(d, primary_sigma)
-
-  # ---- deterministic label geometry ----
-  clampx     <- function(x) pmin(pmax(x, log(0.21)), log(4.8))
-  lab_off    <- 0.18
-  post_side  <- if (prim$m >= 0) 1 else -1     # side the posterior ribbon sits on
-  if (post_lab_side != "auto") post_side <- if (post_lab_side == "right") 1 else -1
-  top_band   <- post_band[which.max(post_band$sigma), ]
-  # "Posterior": next to its own ribbon (right if RR > 1, left otherwise).
-  x_postlab  <- if (post_side > 0) clampx(top_band$hi95 + lab_off) else clampx(top_band$lo95 - lab_off)
-  hj_post    <- if (post_side > 0) 0 else 1
-  # "Prior": centred at RR = 0.3 in every facet.
-  x_priorlab <- log(0.3)
-  # "Primary Analysis": at the point-interval height, just to its right.
-  x_primlab  <- clampx(prim$hi95 + lab_off)
-  prim_lab   <- "Primary Analysis"
+  clampx    <- function(x) pmin(pmax(x, log(0.26)), log(7.8))
+  lab_off   <- 0.10
+  post_side <- if (prim$m >= 0) 1 else -1
+  top_band  <- post_band[which.max(post_band$sigma), ]
+  x_postlab <- if (post_side > 0) clampx(top_band$hi95 + lab_off) else clampx(top_band$lo95 - lab_off)
+  hj_post   <- if (post_side > 0) 0 else 1
+  x_primlab <- clampx(prim$hi95 + lab_off)
+  x_problab <- clampx(prim$lo95 - lab_off)
 
   ggplot() +
-    # prior 95% HDI ribbon (light gray, behind) + prior median (gray)
-    geom_polygon(data = ribbon_poly2(prior_band, "lo95", "hi95"),
-                 aes(x, y), fill = "gray75", alpha = 0.55) +
-    geom_line(data = prior_med, aes(val, sigma), orientation = "y", color = "gray70", linewidth = 0.6) +
-    # posterior 95% HDI ribbon (colored, front) + posterior median
+    # posterior 95% CrI ribbon across prior SDs + posterior median
     geom_polygon(data = ribbon_poly2(post_band, "lo95", "hi95"),
                  aes(x, y), fill = fill_col, alpha = 0.40) +
-    geom_line(data = post_med, aes(val, sigma), orientation = "y", color = fill_col, linewidth = 0.9) +
-    # no-effect reference, drawn last so its dashes read over the prior median
+    geom_line(data = post_med, aes(val, sigma), orientation = "y",
+              color = fill_col, linewidth = 0.9) +
+    # no-effect reference
     geom_vline(xintercept = 0, linetype = "dashed", color = "gray40", linewidth = 0.4) +
-    # primary analysis highlighted on top of the ribbon (matches left-panel interval)
+    # primary-analysis sigma reference
+    geom_hline(yintercept = primary_sigma, linetype = "dotted",
+               color = "gray50", linewidth = 0.4) +
+    # primary analysis highlighted on top of the ribbon
     stat_pointinterval(
       aes(xdist = dist_normal(prim_post$m, prim_post$sd), y = primary_sigma),
       .width = 0.95,
       point_size = 2, interval_size_range = c(0.8, 1.2),
       color = "gray20"
     ) +
-    annotate("text", x = x_primlab, y = primary_sigma, label = prim_lab,
+    annotate("text", x = x_primlab, y = primary_sigma, label = "Primary Analysis",
              hjust = 0, vjust = 0.5, size = fs_annot / .pt, lineheight = 0.9,
              family = font_main, fontface = "bold", color = "black") +
-    # Posterior label next to its ribbon; Prior centred at RR = 0.3
-    annotate("text", x = x_postlab, y = 1.08, label = "Posterior",
-             hjust = hj_post, size = fs_distlab / .pt, family = font_main,
-             fontface = "bold", color = fill_col) +
-    annotate("text", x = x_priorlab, y = 0.93, label = "Prior",
-             hjust = 0.5, size = fs_distlab / .pt, family = font_main,
-             fontface = "bold", color = "gray45") +
-    scale_x_continuous(breaks = log(rr_breaks), labels = rr_breaks, name = x_title) +
-    scale_y_continuous(breaks = c(min(sens_sigmas), max(sens_sigmas)),
-                       labels = c("Highest", "Lowest")) +
-    coord_cartesian(xlim = xlim2, ylim = c(min(sens_sigmas), max(sens_sigmas))) +
-    labs(title = panel_title, y = "Skeptical Prior Strength") +
-    fig_theme
+    # directional posterior probability % at the primary marker (ties B to A)
+    annotate("text", x = x_problab, y = primary_sigma,
+             label = paste0(round(prim_prob), "%"),
+             hjust = 1, vjust = 0.5, size = fs_callout / .pt,
+             family = font_main, fontface = "bold", color = fill_col) +
+    scale_x_continuous(breaks = log(c(0.25, 0.5, 1, 2, 5)),
+                      labels = c(0.25, 0.5, 1, 2, 5), name = x_title) +
+    scale_y_continuous(
+      breaks = c(0.1, 0.35, 0.82, 1.18),
+      labels = c(0.1, 0.35, 0.82, 1.18),
+      name   = "Prior Standard Deviation"
+    ) +
+    coord_cartesian(xlim = log(c(0.25, 6)),
+                    ylim = c(min(sens_sigmas), max(sens_sigmas))) +
+    labs(title = panel_title) +
+    fig_theme +
+    theme(axis.text.y  = element_text(size = fs_axis_txt, color = "gray20"),
+          axis.title.y = element_text(size = fs_axis_ttl))
 }
 
-sA_pseud <- make_sens_ribbon(S_rr$pseud, col_pseudo,      tau_fixed, "Risk Ratio",           "*Pseudomonas* Subgroup")
-sA_other <- make_sens_ribbon(S_rr$other, col_no_pseudo,   tau_fixed, "Risk Ratio",           "Other Gram-negative Subgroup", post_lab_side = "right")
-sA_inter <- make_sens_ribbon(S_rr$inter, col_interaction, tau_inter, "Ratio of Risk Ratios", "Subgroup Difference (Interaction)")
-
-# ---- 9b2: posterior-probability strips (share the ribbon y-axis = sigma) ----
-# A minimal companion to each ribbon: the directional posterior probability (%)
-# traced across the same prior-width grid (sigma on y, shared with the ribbon).
-# One colored line traced along sigma, with a point + bold colored % label marking
-# the primary analysis -- identical to the column-A callout, tying panel B to A.
-#
-# Directional posterior probability (%) traced across the prior-width grid, using
-# the same closed-form posterior (conj, Step 4) and tail probability (prob_dir,
-# Step 5) as Column A. Smooth and monotonic in sigma by construction.
-prob_curve <- function(d, sigmas, direction) {
-  tibble(sigma = sigmas,
-         prob  = vapply(sigmas, function(s) prob_dir(conj(d, s), direction), numeric(1)))
-}
-
-# prim_prob: the directional posterior probability (%) at the EXACT primary
-# prior width, computed the same way as Column A (prob_dir(conj(d, sigma))).
-# Passed in rather than read off the nearest grid point so the primary % marker
-# matches Column A exactly (the grid in sens_sigmas does not land on the primary
-# sigmas 0.82 / 0.35, and the probability sits on a rounding boundary).
-make_prob_strip <- function(pc, fill_col, primary_sigma, prim_prob,
-                            x_breaks, x_labels, xlims, x_title) {
-  prim  <- tibble(sigma = primary_sigma, prob = prim_prob)
-  x_mid <- mean(xlims)
-  lab_hjust <- if (prim$prob >= x_mid) 1.2 else -0.2 # push label into the open side
-
-  ggplot() +
-    geom_line(data = pc, aes(x = prob, y = sigma),
-              orientation = "y", color = fill_col, linewidth = 0.9) +
-    geom_point(data = prim, aes(x = prob, y = sigma),
-               shape = 21, fill = fill_col, color = "white",
-               size = 2.8, stroke = 0.7) +
-    annotate("text", x = prim$prob, y = primary_sigma,
-             label = paste0(round(prim$prob), "%"), hjust = lab_hjust, vjust = 0.5,
-             size = fs_callout / .pt, family = font_main, fontface = "bold",
-             color = fill_col) +
-    scale_x_continuous(breaks = x_breaks, labels = x_labels, name = x_title) +
-    scale_y_continuous(breaks = NULL, name = NULL) +
-    coord_cartesian(xlim = xlims, ylim = c(min(sens_sigmas), max(sens_sigmas))) +
-    labs(title = NULL) +
-    fig_theme
-}
-
-pc_pseud <- prob_curve(S_rr$pseud, sens_sigmas, "above")
-pc_other <- prob_curve(S_rr$other, sens_sigmas, "below")
-pc_inter <- prob_curve(S_rr$inter, sens_sigmas, "above")
-
-# Shared probability x-axis: floor (to 10%) of the lowest directional prob across
-# all three facets up to 100%. Tick every 5%, label every other one (10%) so the
-# narrow strips stay legible.
-prob_vals   <- c(pc_pseud$prob, pc_other$prob, pc_inter$prob)
-prob_lo     <- floor(min(prob_vals) / 10) * 10
-prob_breaks <- seq(prob_lo, 100, by = 5)
-prob_labels <- ifelse(prob_breaks %% 10 == 0, paste0(prob_breaks, "%"), "")
-prob_xlim   <- c(prob_lo, 100)
-
-sP_pseud <- make_prob_strip(pc_pseud, col_pseudo,      tau_fixed, prob_dir(post_pseud, "above"),
-                            prob_breaks, prob_labels, prob_xlim, "P(RR > 1)")
-sP_other <- make_prob_strip(pc_other, col_no_pseudo,   tau_fixed, prob_dir(post_other, "below"),
-                            prob_breaks, prob_labels, prob_xlim, "P(RR < 1)")
-sP_inter <- make_prob_strip(pc_inter, col_interaction, tau_inter, prob_dir(post_inter, "above"),
-                            prob_breaks, prob_labels, prob_xlim, "P(RoRR > 1)")
+sA_pseud <- make_sens_ribbon(S_rr$pseud, col_pseudo,      tau_fixed, "above", prob_dir(post_pseud, "above"),
+                             "Risk Ratio",           "*Pseudomonas* Subgroup")
+sA_other <- make_sens_ribbon(S_rr$other, col_no_pseudo,   tau_fixed, "below", prob_dir(post_other, "below"),
+                             "Risk Ratio",           "Other Gram-negative Subgroup")
+sA_inter <- make_sens_ribbon(S_rr$inter, col_interaction, tau_inter, "above", prob_dir(post_inter, "above"),
+                             "Ratio of Risk Ratios", "Subgroup Difference (Interaction)")
 
 # ---- 9c: two labelled columns (A = Primary Analysis, B = Prior Sensitivity) ----
 # Each column gets a large centred header; wrap_elements collapses each column
@@ -586,13 +515,12 @@ hdr_right <- wrap_elements(grid::textGrob(
 col_left  <- hdr_left  / wrap_elements(p_pseud / p_other / p_int) +
   plot_layout(heights = c(0.045, 1))
 col_right <- hdr_right / wrap_elements(
-  wrap_plots(sA_pseud, sP_pseud, sA_other, sP_other, sA_inter, sP_inter,
-             ncol = 2, byrow = TRUE, widths = c(1, 0.4))
+  wrap_plots(sA_pseud, sA_other, sA_inter, ncol = 1)
 ) +
   plot_layout(heights = c(0.045, 1))
 
 figA <- (wrap_elements(col_left) | wrap_elements(col_right)) +
-  plot_layout(widths = c(1, 1.4)) +
+  plot_layout(widths = c(1, 1)) +
   plot_annotation(tag_levels = "A",
                   theme = theme(plot.tag = element_text(size = fs_tag, face = "bold",
                                                         family = font_main),

@@ -1,0 +1,14 @@
+.gitignore
+CLAUDE.local.md
+.Rproj.user
+correspondence/
+code/
+review_results/
+review/
+test/
+.claude/settings.local.json
+table_appendix.R
+figures/table_appendix.html
+figures/figure_letter.png
+figures/figure_letter.tiff
+implementation-notes/
