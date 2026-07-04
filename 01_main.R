@@ -390,10 +390,9 @@ cat("\n")
 # Both Column-B strips (effect + probability) are evaluated at exactly these.
 #   0.10  strongest skeptic  (RR/RoRR 95% prior ~ 0.83-1.20)
 #   0.35  interaction primary (RoRR 95% prior ~ 0.50-2.0)
-#   0.60  intermediate        (~0.31-3.2)
 #   0.82  subgroup primary    (RR 95% prior ~ 0.20-5.0)
 #   1.18  weakest skeptic     (~0.10-10)
-scenario_sigmas <- c(0.10, 0.35, 0.60, 0.82, 1.18)
+scenario_sigmas <- c(0.10, 0.35, 0.82, 1.18)
 
 # ---- 9b: rebuild the three LEFT posterior panels (same calls as Step 7) ----
 p_pseud <- make_panel(
