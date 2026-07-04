@@ -460,14 +460,10 @@ make_sens_effect <- function(d, fill_col, primary_sigma, direction,
              label = "Primary\nAnalysis", hjust = 0, vjust = 0.5,
              size = fs_annot / .pt, lineheight = 0.9,
              family = font_main, fontface = "bold", color = "black") +
-    # clarify the intervals are POSTERIORS (y-axis reads "Prior ...")
-    annotate("text", x = log(0.27), y = max(scenario_sigmas), label = "Posterior",
-             hjust = 0, vjust = 0.5, size = fs_distlab / .pt,
-             family = font_main, fontface = "bold", color = fill_col) +
-    scale_x_continuous(breaks = log(c(0.25, 0.5, 1, 2, 5)),
-                       labels = c(0.25, 0.5, 1, 2, 5), name = x_title) +
+    scale_x_continuous(breaks = log(c(0.5, 1, 2, 4)),
+                       labels = c(0.5, 1, 2, 4), name = x_title) +
     y_scenarios +
-    coord_cartesian(xlim = log(c(0.25, 6)), ylim = y_lims, clip = "off") +
+    coord_cartesian(xlim = log(c(0.5, 4)), ylim = y_lims, clip = "off") +
     labs(title = panel_title, y = "Prior Standard Deviation") +
     fig_theme + sens_guides +
     theme(axis.text.y  = element_text(size = fs_axis_txt, color = "gray20"),
