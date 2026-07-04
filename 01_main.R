@@ -460,6 +460,10 @@ make_sens_effect <- function(d, fill_col, primary_sigma, direction,
              label = "Primary\nAnalysis", hjust = 0, vjust = 0.5,
              size = fs_annot / .pt, lineheight = 0.9,
              family = font_main, fontface = "bold", color = "black") +
+    # clarify the intervals are POSTERIORS (y-axis reads "Prior ...")
+    annotate("text", x = log(0.27), y = max(scenario_sigmas), label = "Posterior",
+             hjust = 0, vjust = 0.5, size = fs_distlab / .pt,
+             family = font_main, fontface = "bold", color = fill_col) +
     scale_x_continuous(breaks = log(c(0.25, 0.5, 1, 2, 5)),
                        labels = c(0.25, 0.5, 1, 2, 5), name = x_title) +
     y_scenarios +
@@ -468,7 +472,7 @@ make_sens_effect <- function(d, fill_col, primary_sigma, direction,
     fig_theme + sens_guides +
     theme(axis.text.y  = element_text(size = fs_axis_txt, color = "gray20"),
           axis.title.y = element_text(size = fs_axis_ttl),
-          plot.margin  = margin(5, 42, 5, 3))
+          plot.margin  = margin(5, 8, 5, 3))
 }
 
 # RIGHT strip: directional posterior probability at the same representative priors.
@@ -525,7 +529,7 @@ hdr_left  <- wrap_elements(grid::textGrob(
   "Primary Analysis",
   gp = grid::gpar(fontsize = fs_colhdr, fontface = "bold", fontfamily = font_main)))
 hdr_right <- wrap_elements(grid::textGrob(
-  "Prior Sensitivity Analyses",
+  "Sensitivity Analyses",
   gp = grid::gpar(fontsize = fs_colhdr, fontface = "bold", fontfamily = font_main)))
 
 col_left  <- hdr_left  / wrap_elements(p_pseud / p_other / p_int) +
